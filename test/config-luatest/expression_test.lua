@@ -166,17 +166,56 @@ g.test_lexer = function()
     t.assert_error_msg_equals(exp_err(1, 3, 'truncated expression'),
         lexer.split, 'x=')
 
-    -- =x and !x are forbidden.
-    t.assert_error_msg_equals(exp_err(1, 2, 'invalid token'),
-        lexer.split, '!x')
+    -- =x is forbidden.
     t.assert_error_msg_equals(exp_err(1, 2, 'invalid token'),
         lexer.split, '=x')
+    
+        -- Unary ! is allowed.
+    t.assert_equals(lexer.split('!x'), {
+        {type = 'operation', value = '!'},
+        {type = 'variable', value = 'x'},
+    })
+    t.assert_equals(lexer.split('!(x<2.0.0)'), {
+        {type = 'operation', value = '!'},
+        {type = 'grouping', value = '('},
+        {type = 'variable', value = 'x'},
+        {type = 'operation', value = '<'},
+        {type = 'version_literal', value = '2.0.0'},
+        {type = 'grouping', value = ')'},
+    })
+
+    -- Standalone '!' is a truncated expression (missing operand).
+    t.assert_error_msg_equals(exp_err(1, 2, 'truncated expression'),
+        lexer.split, '!')
+
+    -- Dotted variables: allowed only when '.' is followed by [A-Za-z0-9_].
+    t.assert_equals(lexer.split('config.database.use_mvcc_engine'), {
+        {type = 'variable', value = 'config.database.use_mvcc_engine'},
+    })
+    t.assert_equals(lexer.split('a._b'), {
+        {type = 'variable', value = 'a._b'},
+    })
+    t.assert_equals(lexer.split('a.1_b'), {
+        {type = 'variable', value = 'a.1_b'},
+    })
 
     -- A separator should follow a version literal or a variable.
     t.assert_error_msg_equals(exp_err(1, 6, 'invalid token'),
         lexer.split, '0.1.2x')
+
+    -- Dot at end is forbidden.
     t.assert_error_msg_equals(exp_err(1, 2, 'invalid token'),
         lexer.split, 'x.')
+
+    -- Two dots in a row are forbidden.
+    t.assert_error_msg_equals(exp_err(1, 2, 'invalid token'),
+        lexer.split, 'x..y')
+
+    -- Dot before operator is forbidden.
+    t.assert_error_msg_equals(exp_err(1, 2, 'invalid token'),
+        lexer.split, 'x.!')
+    t.assert_error_msg_equals(exp_err(1, 2, 'invalid token'),
+        lexer.split, 'x.)')
 
     -- | and & are invalid operators.
     t.assert_error_msg_equals(exp_err(1, 3, 'invalid token'),
@@ -202,6 +241,61 @@ g.test_lexer = function()
     t.assert_error_msg_equals(exp_err(1, 8, 'invalid version literal: ' ..
         'expected 3 components, got 4'),
         lexer.split, '1.2.3.4')
+
+    -- Full example from metadata.
+    t.assert_equals(lexer.split('tarantool_version < 3.5.0 || !config.database.use_mvcc_engine'), {
+        {type = 'variable', value = 'tarantool_version'},
+        {type = 'operation', value = '<'},
+        {type = 'version_literal', value = '3.5.0'},
+        {type = 'operation', value = '||'},
+        {type = 'operation', value = '!'},
+        {type = 'variable', value = 'config.database.use_mvcc_engine'}
+    })
+
+    -- Lexer-level corner cases around '!'.
+    --
+    -- Note: syntactically "x ! config" is not a valid expression for parser,
+    -- but lexer should still tokenize it consistently.
+    t.assert_equals(lexer.split('x ! config'), {
+        {type = 'variable', value = 'x'},
+        {type = 'operation', value = '!'},
+        {type = 'variable', value = 'config'},
+    })
+
+    t.assert_equals(lexer.split('x!=!y'), {
+        {type = 'variable', value = 'x'},
+        {type = 'operation', value = '!='},
+        {type = 'operation', value = '!'},
+        {type = 'variable', value = 'y'},
+    })
+
+    t.assert_equals(lexer.split('x>=!y'), {
+        {type = 'variable', value = 'x'},
+        {type = 'operation', value = '>='},
+        {type = 'operation', value = '!'},
+        {type = 'variable', value = 'y'},
+    })
+
+    t.assert_equals(lexer.split('!x>1.0.0'), {
+        {type = 'operation', value = '!'},
+        {type = 'variable', value = 'x'},
+        {type = 'operation', value = '>'},
+        {type = 'version_literal', value = '1.0.0'}
+    })
+
+    t.assert_equals(lexer.split('x.y.z>1.0.0'), {
+        {type = 'variable', value = 'x.y.z'},
+        {type = 'operation', value = '>'},
+        {type = 'version_literal', value = '1.0.0'}
+    })
+
+    t.assert_error_msg_equals(exp_err(1, 2, 'invalid token'), lexer.split, 'x. y')
+
+    t.assert_error_msg_equals(exp_err(1, 1, 'invalid token'),
+        lexer.split, '.')
+
+    t.assert_error_msg_equals(exp_err(1, 3, 'invalid token'),
+        lexer.split, 'x!.')
 end
 
 -- Verify AST generation.
