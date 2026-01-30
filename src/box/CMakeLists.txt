@@ -50,6 +50,7 @@ lua_source(lua_sources lua/config/source/file.lua          config_source_file_lu
 lua_source(lua_sources lua/config/validators.lua           config_validators_lua)
 lua_source(lua_sources lua/config/utils/aboard.lua         config_utils_aboard_lua)
 lua_source(lua_sources lua/config/utils/expression.lua     config_utils_expression_lua)
+lua_source(lua_sources lua/config/utils/fail_if.lua        config_utils_fail_if_lua)
 lua_source(lua_sources lua/config/utils/file.lua           config_utils_file_lua)
 lua_source(lua_sources lua/config/utils/log.lua            config_utils_log_lua)
 lua_source(lua_sources lua/config/utils/odict.lua          config_utils_odict_lua)
