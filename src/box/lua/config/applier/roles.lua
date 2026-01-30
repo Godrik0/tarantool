@@ -1,12 +1,7 @@
 local log = require('internal.config.utils.log')
 local file = require('internal.config.utils.file')
-local expression = require('internal.config.utils.expression')
+local fail_if = require('internal.config.utils.fail_if')
 local fiber = require('fiber')
-
-local fail_if_vars = {
-    tarantool_version = _TARANTOOL:match('^%d+%.%d+%.%d+'),
-}
-assert(fail_if_vars.tarantool_version ~= nil)
 
 local roles_state = {
     -- Loaded roles, where the key is the role name and the value is the
@@ -195,8 +190,7 @@ local function preload(config)
         local md = roles_state.metadata[role_name]
         if md ~= nil and md['fail_if'] ~= nil then
             local expr = md['fail_if']
-            local ok, res = pcall(expression.eval, expr, fail_if_vars)
-
+            local ok, res = pcall(fail_if.eval, expr, configdata)
             if not ok then
                 error(('Role %q has invalid "fail_if" expression: %s')
                     :format(role_name, res), 0)
@@ -371,6 +365,22 @@ local function post_apply(config)
             table.insert(roles_ordered, role_name)
         end
         roles[role_name] = true
+    end
+
+    for _, role_name in ipairs(role_names) do
+        local md = roles_state.metadata[role_name]
+        if md ~= nil and md['fail_if'] ~= nil then
+            local expr = md['fail_if']
+            local ok, res = pcall(fail_if.eval, expr, configdata)
+            if not ok then
+                error(('Role %q has invalid "fail_if" expression: %s')
+                    :format(role_name, res), 0)
+            end
+            if res then
+                error(('Role %q failed the "fail_if" check: %q')
+                    :format(role_name, expr), 0)
+            end
+        end
     end
 
     -- Stop removed roles.

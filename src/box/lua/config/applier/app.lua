@@ -1,11 +1,6 @@
 local log = require('internal.config.utils.log')
 local utils_file = require('internal.config.utils.file')
-local expression = require('internal.config.utils.expression')
-
-local fail_if_vars = {
-    tarantool_version = _TARANTOOL:match('^%d+%.%d+%.%d+'),
-}
-assert(fail_if_vars.tarantool_version ~= nil)
+local fail_if = require('internal.config.utils.fail_if')
 
 local app_state = {
     -- This variable is used to track the app loaded before the box.cfg() call.
@@ -37,8 +32,7 @@ local function run(config, opts)
 
         if metadata['fail_if'] ~= nil then
             local expr = metadata['fail_if']
-            local ok, res = pcall(expression.eval, expr, fail_if_vars)
-
+            local ok, res = pcall(fail_if.eval, expr, configdata)
             if not ok then
                 error(('App %q has invalid "fail_if" expression: %s')
                     :format(file, res), 0)
@@ -81,7 +75,7 @@ local function run(config, opts)
 
         if metadata['fail_if'] ~= nil then
             local expr = metadata['fail_if']
-            local ok, res = pcall(expression.eval, expr, fail_if_vars)
+            local ok, res = pcall(fail_if.eval, expr, configdata)
 
             if not ok then
                 error(('App %q has invalid "fail_if" expression: %s')
