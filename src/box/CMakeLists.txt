@@ -132,6 +132,7 @@ set_property(DIRECTORY PROPERTY ADDITIONAL_MAKE_CLEAN_FILES ${lua_sources})
 include_directories(${ZSTD_INCLUDE_DIRS})
 include_directories(${PROJECT_BINARY_DIR}/src/box/sql)
 include_directories(${PROJECT_BINARY_DIR}/src/box)
+include_directories(${PROJECT_SOURCE_DIR}/third_party/usearch/include)
 include_directories(${EXTRA_CORE_INCLUDE_DIRS})
 include_directories(${EXTRA_SALAD_INCLUDE_DIRS})
 include_directories(${EXTRA_BOX_INCLUDE_DIRS})
@@ -204,6 +205,7 @@ set(box_sources
     memtx_hash.cc
     memtx_tree.cc
     memtx_rtree.cc
+    memtx_vector.cc
     memtx_bitset.cc
     memtx_tx.c
     module_cache.c

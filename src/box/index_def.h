@@ -46,6 +46,7 @@ enum index_type {
 	TREE,     /* TREE Index */
 	BITSET,   /* BITSET Index */
 	RTREE,    /* R-Tree Index */
+	VECTOR,   /* Vector index */
 	index_type_MAX,
 };
 
@@ -58,14 +59,26 @@ enum index_hint_cfg {
 	INDEX_HINT_OFF
 };
 
-enum rtree_index_distance_type {
+enum index_distance_type {
 	 /* Euclid distance, sqrt(dx*dx + dy*dy) */
-	RTREE_INDEX_DISTANCE_TYPE_EUCLID,
+	INDEX_DISTANCE_TYPE_EUCLID,
 	/* Manhattan distance, fabs(dx) + fabs(dy) */
-	RTREE_INDEX_DISTANCE_TYPE_MANHATTAN,
-	rtree_index_distance_type_MAX
+	INDEX_DISTANCE_TYPE_MANHATTAN,
+	/* Cosine distance. */
+	INDEX_DISTANCE_TYPE_COSINE,
+	/* L2 squared distance. */
+	INDEX_DISTANCE_TYPE_L2,
+	/* Inner product distance. */
+	INDEX_DISTANCE_TYPE_IP,
+	index_distance_type_MAX
 };
-extern const char *rtree_index_distance_type_strs[];
+extern const char *index_distance_type_strs[];
+
+enum vector_index_algorithm {
+	VECTOR_INDEX_ALGORITHM_HNSW = 0,
+	vector_index_algorithm_MAX
+};
+extern const char *vector_index_algorithm_strs[];
 
 /** Covered field attributes. */
 struct covered_field_def {
@@ -89,7 +102,23 @@ struct index_opts {
 	/**
 	 * RTREE distance type.
 	 */
-	enum rtree_index_distance_type distance;
+	enum index_distance_type distance;
+	/**
+	 * VECTOR index algorithm.
+	 */
+	enum vector_index_algorithm algorithm;
+	/**
+	 * VECTOR HNSW connectivity.
+	 */
+	int64_t m;
+	/**
+	 * VECTOR HNSW construction beam width.
+	 */
+	int64_t ef_construction;
+	/**
+	 * VECTOR search beam width.
+	 */
+	int64_t ef_search;
 	/**
 	 * Vinyl index options.
 	 */
@@ -175,6 +204,14 @@ index_opts_is_equal(const struct index_opts *o1, const struct index_opts *o2)
 	if (o1->dimension != o2->dimension)
 		return false;
 	if (o1->distance != o2->distance)
+		return false;
+	if (o1->algorithm != o2->algorithm)
+		return false;
+	if (o1->m != o2->m)
+		return false;
+	if (o1->ef_construction != o2->ef_construction)
+		return false;
+	if (o1->ef_search != o2->ef_search)
 		return false;
 	if (o1->range_size != o2->range_size)
 		return false;

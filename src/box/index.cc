@@ -107,6 +107,7 @@ iterator_validate(struct index_def *index_def, enum iterator_type type,
 			(1U << ITER_LT) | (1U << ITER_LE) |
 			(1U << ITER_GT) | (1U << ITER_GE) |
 			(1U << ITER_OVERLAPS) | (1U << ITER_NEIGHBOR),
+		/* [VECTOR] = */ (1U << ITER_ALL) | (1U << ITER_NEIGHBOR),
 	};
 	if (((1U << type) & supported_types[index_def->type]) == 0) {
 		diag_set(UnsupportedIndexFeature, index_def,
@@ -165,6 +166,27 @@ iterator_validate(struct index_def *index_def, enum iterator_type type,
 					goto error;
 				mp_next(&key);
 			}
+		}
+	} else if (index_def->type == VECTOR) {
+		unsigned d = index_def->opts.dimension;
+		if (part_count != 1) {
+			diag_set(ClientError, ER_KEY_PART_COUNT, 1, part_count);
+			goto error;
+		}
+		if (key_part_validate(FIELD_TYPE_ARRAY, NULL, key, 0, false))
+			goto error;
+		uint32_t array_size = mp_decode_array(&key);
+		if (array_size != d) {
+			diag_set(IllegalParams,
+				 tt_sprintf("vector dimension must be %u, "
+					    "got %u", d, array_size));
+			goto error;
+		}
+		for (uint32_t part = 0; part < array_size; part++) {
+			if (key_part_validate(FIELD_TYPE_NUMBER, NULL, key, part,
+					      false))
+				goto error;
+			mp_next(&key);
 		}
 	} else {
 		if (part_count > index_def->key_def->part_count) {

@@ -891,8 +891,9 @@ static hint_t
 memtx_tx_tuple_hint(struct tuple *tuple, struct index *index, struct key_def *def)
 {
 	assert(tuple_has_flag(tuple, TUPLE_IS_DIRTY));
-	/* R-tree does not support tuple hint. */
-	if (unlikely(index->def->type == RTREE))
+	/* R-tree and vector indexes do not support tuple hint. */
+	if (unlikely(index->def->type == RTREE ||
+		     index->def->type == VECTOR))
 		return HINT_NONE;
 	if (unlikely(index->def->key_def->for_func_index))
 		return (hint_t)memtx_tx_tuple_func_key(tuple, index);

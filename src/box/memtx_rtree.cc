@@ -453,8 +453,8 @@ memtx_rtree_index_new(struct memtx_engine *memtx, struct index_def *def)
 		return NULL;
 	}
 
-	assert((int)RTREE_EUCLID == (int)RTREE_INDEX_DISTANCE_TYPE_EUCLID);
-	assert((int)RTREE_MANHATTAN == (int)RTREE_INDEX_DISTANCE_TYPE_MANHATTAN);
+	assert((int)RTREE_EUCLID == (int)INDEX_DISTANCE_TYPE_EUCLID);
+	assert((int)RTREE_MANHATTAN == (int)INDEX_DISTANCE_TYPE_MANHATTAN);
 	enum rtree_distance_type distance_type =
 		(enum rtree_distance_type)def->opts.distance;
 

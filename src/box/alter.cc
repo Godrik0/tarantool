@@ -215,12 +215,55 @@ err:
  * Validates index options.
  */
 static int
-index_opts_validate(struct index_opts *opts)
+index_opts_validate(enum index_type type, struct index_opts *opts)
 {
-	if (opts->distance == rtree_index_distance_type_MAX) {
-		diag_set(ClientError, ER_WRONG_INDEX_OPTIONS,
-			 "distance must be either 'euclid' or 'manhattan'");
-		return -1;
+	switch (type) {
+	case RTREE:
+		if (opts->distance != INDEX_DISTANCE_TYPE_EUCLID &&
+		    opts->distance != INDEX_DISTANCE_TYPE_MANHATTAN) {
+			diag_set(ClientError, ER_WRONG_INDEX_OPTIONS,
+				 "distance must be either 'euclid' or "
+				 "'manhattan'");
+			return -1;
+		}
+		break;
+	case VECTOR:
+		if (opts->distance != INDEX_DISTANCE_TYPE_COSINE &&
+		    opts->distance != INDEX_DISTANCE_TYPE_L2 &&
+		    opts->distance != INDEX_DISTANCE_TYPE_IP) {
+			diag_set(ClientError, ER_WRONG_INDEX_OPTIONS,
+				 "distance must be either 'cosine', 'l2' or "
+				 "'ip'");
+			return -1;
+		}
+		if (opts->algorithm != VECTOR_INDEX_ALGORITHM_HNSW) {
+			diag_set(ClientError, ER_WRONG_INDEX_OPTIONS,
+				 "algorithm must be 'hnsw'");
+			return -1;
+		}
+		if (opts->dimension <= 0 || opts->dimension > UINT32_MAX) {
+			diag_set(ClientError, ER_WRONG_INDEX_OPTIONS,
+				 "dimension must be greater than 0");
+			return -1;
+		}
+		if (opts->m < 2) {
+			diag_set(ClientError, ER_WRONG_INDEX_OPTIONS,
+				 "m must be greater than or equal to 2");
+			return -1;
+		}
+		if (opts->ef_construction <= 0) {
+			diag_set(ClientError, ER_WRONG_INDEX_OPTIONS,
+				 "ef_construction must be greater than 0");
+			return -1;
+		}
+		if (opts->ef_search <= 0) {
+			diag_set(ClientError, ER_WRONG_INDEX_OPTIONS,
+				 "ef_search must be greater than 0");
+			return -1;
+		}
+		break;
+	default:
+		break;
 	}
 	if (opts->page_size <= 0 || (opts->range_size > 0 &&
 				     opts->page_size > opts->range_size)) {
@@ -373,7 +416,7 @@ index_def_new_from_tuple(struct tuple *tuple, struct space *space)
 			 diag_last_error(diag_get())->errmsg);
 		return NULL;
 	}
-	if (index_opts_validate(&opts) != 0)
+	if (index_opts_validate(type, &opts) != 0)
 		return NULL;
 	if (opts.covered_field_count != 0 && index_id == 0) {
 		diag_set(ClientError, ER_WRONG_INDEX_OPTIONS,

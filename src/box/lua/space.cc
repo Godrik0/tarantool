@@ -631,6 +631,22 @@ lbox_fillspace(struct lua_State *L, struct space *space, int i)
 		} else if (index_def->type == RTREE) {
 			lua_pushnumber(L, index_opts->dimension);
 			lua_setfield(L, -2, "dimension");
+		} else if (index_def->type == VECTOR) {
+			lua_pushnumber(L, index_opts->dimension);
+			lua_setfield(L, -2, "dimension");
+			lua_pushstring(L,
+				       index_distance_type_strs[index_opts->distance]);
+			lua_setfield(L, -2, "distance");
+			lua_pushstring(L,
+				       vector_index_algorithm_strs[
+					       index_opts->algorithm]);
+			lua_setfield(L, -2, "algorithm");
+			lua_pushnumber(L, index_opts->m);
+			lua_setfield(L, -2, "m");
+			lua_pushnumber(L, index_opts->ef_construction);
+			lua_setfield(L, -2, "ef_construction");
+			lua_pushnumber(L, index_opts->ef_search);
+			lua_setfield(L, -2, "ef_search");
 		}
 		if (space_is_memtx(space) && index_def->type == TREE) {
 			lua_pushboolean(L, index_opts->hint == INDEX_HINT_ON);

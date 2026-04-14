@@ -1199,6 +1199,10 @@ local index_options = {
     unique = 'boolean',
     dimension = 'number',
     distance = 'string',
+    algorithm = 'string',
+    m = 'number',
+    ef_construction = 'number',
+    ef_search = 'number',
     run_count_per_level = 'number',
     run_size_ratio = 'number',
     range_size = 'number',
@@ -1351,6 +1355,14 @@ box.schema.index.create = atomic_wrapper(function(space_id, name, options)
     options = update_param_table(options, options_defaults)
     local type_dependent_defaults = {
         rtree = {parts = { 2, 'array' }, unique = false},
+        vector = {
+            parts = { 2, 'array' },
+            unique = false,
+            algorithm = 'hnsw',
+            m = 16,
+            ef_construction = 200,
+            ef_search = 64,
+        },
         bitset = {parts = { 2, 'unsigned' }, unique = false},
         other = {parts = { 1, 'unsigned' }, unique = true},
     }
@@ -1414,6 +1426,10 @@ box.schema.index.create = atomic_wrapper(function(space_id, name, options)
             dimension = options.dimension,
             unique = options.unique,
             distance = options.distance,
+            algorithm = options.algorithm,
+            m = options.m,
+            ef_construction = options.ef_construction,
+            ef_search = options.ef_search,
             page_size = options.page_size,
             range_size = options.range_size,
             run_count_per_level = options.run_count_per_level,

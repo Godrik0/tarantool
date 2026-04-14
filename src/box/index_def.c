@@ -36,14 +36,24 @@
 #include "fiber.h"
 #include "tt_static.h"
 
-const char *index_type_strs[] = { "HASH", "TREE", "BITSET", "RTREE" };
+const char *index_type_strs[] = {
+	"HASH", "TREE", "BITSET", "RTREE", "VECTOR"
+};
 
-const char *rtree_index_distance_type_strs[] = { "EUCLID", "MANHATTAN" };
+const char *index_distance_type_strs[] = {
+	"euclid", "manhattan", "cosine", "l2", "ip"
+};
+
+const char *vector_index_algorithm_strs[] = { "hnsw" };
 
 const struct index_opts index_opts_default = {
 	/* .unique              = */ true,
 	/* .dimension           = */ 2,
-	/* .distance            = */ RTREE_INDEX_DISTANCE_TYPE_EUCLID,
+	/* .distance            = */ INDEX_DISTANCE_TYPE_EUCLID,
+	/* .algorithm           = */ VECTOR_INDEX_ALGORITHM_HNSW,
+	/* .m                   = */ 16,
+	/* .ef_construction     = */ 200,
+	/* .ef_search           = */ 64,
 	/* .range_size          = */ 0,
 	/* .page_size           = */ 8192,
 	/* .run_count_per_level = */ 2,
@@ -241,8 +251,14 @@ index_opts_parse_aggregates(const char **data, void *opts,
 const struct opt_def index_opts_reg[] = {
 	OPT_DEF("unique", OPT_BOOL, struct index_opts, is_unique),
 	OPT_DEF("dimension", OPT_INT64, struct index_opts, dimension),
-	OPT_DEF_ENUM("distance", rtree_index_distance_type, struct index_opts,
+	OPT_DEF_ENUM("distance", index_distance_type, struct index_opts,
 		     distance, NULL),
+	OPT_DEF_ENUM("algorithm", vector_index_algorithm, struct index_opts,
+		     algorithm, NULL),
+	OPT_DEF("m", OPT_INT64, struct index_opts, m),
+	OPT_DEF("ef_construction", OPT_INT64, struct index_opts,
+		ef_construction),
+	OPT_DEF("ef_search", OPT_INT64, struct index_opts, ef_search),
 	OPT_DEF("range_size", OPT_INT64, struct index_opts, range_size),
 	OPT_DEF("page_size", OPT_INT64, struct index_opts, page_size),
 	OPT_DEF("run_count_per_level", OPT_INT64, struct index_opts, run_count_per_level),
