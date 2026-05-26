@@ -135,6 +135,25 @@ I['app.module'] = 'A Lua module to load an application from.'
 
 -- }}} app configuration
 
+-- {{{ checks configuration
+
+I['config.checks'] = format_text([[
+    The `checks` section controls which system checks are enabled.
+    When a check is enabled and detects an issue, a warning alert
+    appears in `box.info.config.alerts`.
+]])
+
+I['config.checks.transparent_huge_pages'] = format_text([[
+    Whether to check if Transparent Huge Pages (THP) are enabled.
+
+    When enabled, the check generates a warning alert if THP is set
+    to `always` or `madvise` mode.
+
+    To disable THP: `echo never > /sys/kernel/mm/transparent_hugepage/enabled`
+]])
+
+-- }}} checks configuration
+
 -- {{{ audit_log configuration
 
 I['audit_log'] = format_text([[

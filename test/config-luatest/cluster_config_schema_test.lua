@@ -99,6 +99,7 @@ local instance_config_fields = {
     'isolated',
     'connpool',
     'threads',
+    'checks',
 }
 
 -- Verify that the fields of the given schema correspond to the
@@ -465,6 +466,9 @@ g.test_defaults = function()
         },
         connpool = {
             idle_timeout = 60,
+        },
+        checks = {
+            transparent_huge_pages = false,
         },
     }
 
