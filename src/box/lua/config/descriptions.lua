@@ -152,6 +152,14 @@ I['config.checks.transparent_huge_pages'] = format_text([[
     To disable THP: `echo never > /sys/kernel/mm/transparent_hugepage/enabled`
 ]])
 
+I['config.checks.mixed_sync_async_spaces'] = format_text([[
+    Whether to check for spaces with different `is_sync` flags.
+
+    When enabled, the check generates a warning alert if both
+    synchronous and asynchronous spaces exist in the same
+    replicaset.
+]])
+
 -- }}} checks configuration
 
 -- {{{ audit_log configuration

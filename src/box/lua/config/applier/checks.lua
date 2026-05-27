@@ -63,6 +63,55 @@ end
 
 -- }}} THP (Transparent Huge Pages) check
 
+-- {{{ Mixed sync/async spaces check
+
+local MIXED_SYNC_ALERT_KEY = 'mixed_sync_async_spaces'
+
+-- Detect whether there are spaces with different is_sync flags.
+-- Returns true if both sync and async spaces exist, false otherwise.
+local function has_mixed_sync_spaces()
+    local has_sync = false
+    local has_async = false
+
+    for _, sp in pairs(box.space) do
+        if sp.is_sync then
+            has_sync = true
+        else
+            has_async = true
+        end
+        if has_async and has_sync then
+            return true
+        end
+    end
+    return false
+end
+
+local function check_mixed_sync(config, configdata)
+    if not configdata:get('config.checks.' .. MIXED_SYNC_ALERT_KEY,
+        {use_default = true}) then
+        config._aboard:drop(MIXED_SYNC_ALERT_KEY)
+        return
+    end
+
+    if not has_mixed_sync_spaces() then
+        config._aboard:drop(MIXED_SYNC_ALERT_KEY)
+        return
+    end
+
+    config._aboard:set({
+        type = 'warn',
+        message = 'The replicaset has spaces with different is_sync ' ..
+            'flags. Mixing synchronous and asynchronous spaces in ' ..
+            'the same replicaset may lead to unexpected behavior. ' ..
+            'Consider using only synchronous or only asynchronous ' ..
+            'spaces within a replicaset.',
+    }, {
+        key = MIXED_SYNC_ALERT_KEY,
+    })
+end
+
+-- }}} Mixed sync/async spaces check
+
 -- {{{ System checks registry
 
 -- List of system checks to perform.
@@ -74,6 +123,7 @@ end
 --   checks.my_check_name = function(config, configdata) ... end
 local checks = {
     transparent_huge_pages = check_thp,
+    mixed_sync_async_spaces = check_mixed_sync,
 }
 
 -- }}} System checks registry

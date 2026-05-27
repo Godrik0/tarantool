@@ -469,6 +469,10 @@ return schema.new('instance_config', schema.record({
                 type = 'boolean',
                 default = false,
             }),
+            mixed_sync_async_spaces = schema.scalar({
+                type = 'boolean',
+                default = false,
+            }),
         }),
     }),
     process = schema.record({

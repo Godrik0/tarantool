@@ -469,6 +469,7 @@ g.test_defaults = function()
         },
         checks = {
             transparent_huge_pages = false,
+            mixed_sync_async_spaces = false,
         },
     }
 
