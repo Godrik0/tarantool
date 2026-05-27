@@ -465,6 +465,11 @@ return schema.new('instance_config', schema.record({
             }),
         }),
         checks = schema.record({
+            interval = schema.scalar({
+                type = 'number',
+                default = 60,
+                validate = validators['config.checks.interval'],
+            }),
             transparent_huge_pages = schema.scalar({
                 type = 'boolean',
                 default = false,

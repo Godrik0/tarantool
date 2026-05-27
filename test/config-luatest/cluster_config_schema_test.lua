@@ -468,6 +468,7 @@ g.test_defaults = function()
             idle_timeout = 60,
         },
         checks = {
+            interval = 60,
             transparent_huge_pages = false,
             mixed_sync_async_spaces = false,
         },

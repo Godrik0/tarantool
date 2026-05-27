@@ -204,3 +204,209 @@ g.test_mixed_sync_alert_disabled_by_default = function(g)
 end
 
 -- }}} Mixed sync/async spaces check
+
+-- {{{ Fiber-based checks
+
+g.test_fiber_detects_thp_enabled = function(g)
+    g.temp_dir = fio.tempdir()
+    local thp_file = create_thp_file(g.temp_dir, 'never')
+
+    local builder = cbuilder:new():add_instance('i-001', {})
+    builder = builder:set_instance_option('i-001', 'config.checks', {
+        transparent_huge_pages = true,
+    })
+    local config = builder:config()
+
+    g.cluster = cluster:new(config)
+    g.cluster:start()
+
+    g.cluster['i-001']:exec(function(thp_file)
+        local t = require('luatest')
+        local fiber = require('fiber')
+        local fio = require('fio')
+        local checks = require('internal.config.applier.checks')
+
+        checks._internal.set_thp_sysfs_path(thp_file)
+        checks._internal.set_check_interval(1)
+
+        t.assert_equals(require('config'):info().status, 'ready')
+
+        local fh = fio.open(thp_file, {'O_WRONLY', 'O_TRUNC'})
+        fh:write('[always] madvise never')
+        fh:close()
+
+        local cond = fiber.cond()
+        local watcher = box.watch('config.info', function(_, info)
+            if info.status == 'check_warnings' then
+                cond:signal()
+            end
+        end)
+        local ok = cond:wait(5)
+        watcher:unregister()
+        t.assert(ok, 'Timed out waiting for check_warnings status')
+
+        local alerts = box.info.config.alerts
+        local found = false
+        for _, alert in ipairs(alerts) do
+            if alert.message ~= nil and
+                    string.find(alert.message, 'Transparent Huge Pages', 1,
+                        true) ~= nil then
+                found = true
+                break
+            end
+        end
+        t.assert(found, 'THP alert not found after fiber detected change')
+
+        checks._internal.stop_fiber()
+    end, {thp_file})
+end
+
+g.test_fiber_drops_thp_alert_after_disabled = function(g)
+    g.temp_dir = fio.tempdir()
+    local thp_file = create_thp_file(g.temp_dir, 'always')
+
+    local builder = cbuilder:new():add_instance('i-001', {})
+    builder = builder:set_instance_option('i-001', 'config.checks', {
+        transparent_huge_pages = true,
+    })
+    local config = builder:config()
+
+    g.cluster = cluster:new(config)
+    g.cluster:start()
+
+    g.cluster['i-001']:exec(function(thp_file)
+        local t = require('luatest')
+        local fiber = require('fiber')
+        local fio = require('fio')
+        local checks = require('internal.config.applier.checks')
+
+        checks._internal.set_thp_sysfs_path(thp_file)
+        checks.apply(require('config'))
+
+        checks._internal.set_check_interval(1)
+
+        local cond = fiber.cond()
+        local watcher = box.watch('config.info', function(_, info)
+            if info.status == 'check_warnings' then
+                cond:signal()
+            end
+        end)
+        local ok = cond:wait(5)
+        t.assert(ok, 'Timed out waiting for check_warnings status')
+
+        local fh = fio.open(thp_file, {'O_WRONLY', 'O_TRUNC'})
+        fh:write('always madvise [never]')
+        fh:close()
+
+        local cond2 = fiber.cond()
+        local watcher2 = box.watch('config.info', function(_, info)
+            if info.status == 'ready' then
+                cond2:signal()
+            end
+        end)
+        ok = cond2:wait(5)
+        watcher:unregister()
+        watcher2:unregister()
+        t.assert(ok, 'Timed out waiting for ready status')
+
+        t.assert_equals(box.info.config.alerts, {})
+
+        checks._internal.stop_fiber()
+    end, {thp_file})
+end
+
+g.test_fiber_detects_new_sync_space = function(g)
+    local builder = cbuilder:new():add_instance('i-001', {})
+    builder = builder:set_instance_option('i-001', 'config.checks', {
+        mixed_sync_async_spaces = true,
+    })
+    local config = builder:config()
+
+    g.cluster = cluster:new(config)
+    g.cluster:start()
+
+    g.cluster['i-001']:exec(function()
+        local t = require('luatest')
+        local fiber = require('fiber')
+        local checks = require('internal.config.applier.checks')
+
+        checks._internal.set_check_interval(1)
+
+        t.assert_equals(require('config'):info().status, 'ready')
+
+        box.schema.create_space('sync_space', {is_sync = true})
+
+        local cond = fiber.cond()
+        local watcher = box.watch('config.info', function(_, info)
+            if info.status == 'check_warnings' then
+                cond:signal()
+            end
+        end)
+        local ok = cond:wait(5)
+        watcher:unregister()
+        t.assert(ok, 'Timed out waiting for check_warnings status')
+
+        local alerts = box.info.config.alerts
+        local found = false
+        for _, alert in ipairs(alerts) do
+            if alert.message ~= nil and
+                    string.find(alert.message, 'different is_sync', 1,
+                        true) ~= nil then
+                found = true
+                break
+            end
+        end
+        t.assert(found, 'Alert not found after fiber detected sync space')
+
+        checks._internal.stop_fiber()
+    end)
+end
+
+g.test_fiber_drops_alert_after_space_drop = function(g)
+    local builder = cbuilder:new():add_instance('i-001', {})
+    builder = builder:set_instance_option('i-001', 'config.checks', {
+        mixed_sync_async_spaces = true,
+    })
+    local config = builder:config()
+
+    g.cluster = cluster:new(config)
+    g.cluster:start()
+
+    g.cluster['i-001']:exec(function()
+        local t = require('luatest')
+        local fiber = require('fiber')
+        local checks = require('internal.config.applier.checks')
+
+        checks._internal.set_check_interval(1)
+
+        box.schema.create_space('sync_space', {is_sync = true})
+
+        local cond = fiber.cond()
+        local watcher = box.watch('config.info', function(_, info)
+            if info.status == 'check_warnings' then
+                cond:signal()
+            end
+        end)
+        local ok = cond:wait(5)
+        t.assert(ok, 'Timed out waiting for check_warnings status')
+
+        box.space.sync_space:drop()
+
+        local cond2 = fiber.cond()
+        local watcher2 = box.watch('config.info', function(_, info)
+            if info.status == 'ready' then
+                cond2:signal()
+            end
+        end)
+        ok = cond2:wait(5)
+        watcher:unregister()
+        watcher2:unregister()
+        t.assert(ok, 'Timed out waiting for ready status')
+
+        t.assert_equals(box.info.config.alerts, {})
+
+        checks._internal.stop_fiber()
+    end)
+end
+
+-- }}} Fiber-based checks
