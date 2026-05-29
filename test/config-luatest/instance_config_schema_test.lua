@@ -63,6 +63,7 @@ g.test_config = function()
             context = {},
             checks = {
                 interval = 60,
+                transparent_huge_pages = false,
             },
         },
     }
@@ -77,6 +78,7 @@ g.test_config = function()
         },
         checks = {
             interval = 60,
+            transparent_huge_pages = false,
         },
     }
     local res = instance_config:apply_default({}).config
@@ -166,6 +168,7 @@ g.test_config_enterprise = function()
         },
         checks = {
             interval = 60,
+            transparent_huge_pages = false,
         },
     }
     local res = instance_config:apply_default({}).config

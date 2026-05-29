@@ -364,6 +364,7 @@ g.test_defaults = function()
             },
             checks = {
                 interval = 60,
+                transparent_huge_pages = false,
             },
         },
         feedback = box.internal.feedback_daemon ~= nil and {

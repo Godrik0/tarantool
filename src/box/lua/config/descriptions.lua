@@ -153,6 +153,17 @@ I['config.checks.interval'] = format_text([[
     to detect runtime changes without requiring `config:reload()`.
 ]])
 
+I['config.checks.transparent_huge_pages'] = format_text([[
+    Whether to check if Transparent Huge Pages (THP) are enabled.
+
+    When enabled, the check generates a warning alert if THP is set
+    to `always` or `madvise` mode.
+
+    To disable THP temporarily:
+        `echo never > /sys/kernel/mm/transparent_hugepage/enabled`
+    For a persistent fix, configure THP according to your OS distribution.
+]])
+
 -- }}} checks configuration
 
 -- {{{ audit_log configuration
