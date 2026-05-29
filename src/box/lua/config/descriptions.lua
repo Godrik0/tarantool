@@ -135,6 +135,26 @@ I['app.module'] = 'A Lua module to load an application from.'
 
 -- }}} app configuration
 
+-- {{{ checks configuration
+
+I['config.checks'] = format_text([[
+    The `checks` section controls which system checks are enabled.
+    When a check is enabled and detects an issue, a warning alert
+    appears in `box.info.config.alerts`.
+
+    The checks run on every config apply/reload and also periodically
+    via a background fiber, so that runtime changes are detected automatically.
+]])
+
+I['config.checks.interval'] = format_text([[
+    Interval in seconds between periodic check runs.
+
+    The background fiber re-runs all enabled checks at this interval
+    to detect runtime changes without requiring `config:reload()`.
+]])
+
+-- }}} checks configuration
+
 -- {{{ audit_log configuration
 
 I['audit_log'] = format_text([[

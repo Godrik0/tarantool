@@ -464,6 +464,13 @@ return schema.new('instance_config', schema.record({
                 validate = validators['config.context.*'],
             }),
         }),
+        checks = schema.record({
+            interval = schema.scalar({
+                type = 'number',
+                default = 60,
+                validate = validators['config.checks.interval'],
+            }),
+        }),
     }),
     process = schema.record({
         strip_core = schema.scalar({

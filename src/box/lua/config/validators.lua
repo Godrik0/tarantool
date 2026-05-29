@@ -224,6 +224,12 @@ M['config.storage.prefix'] = function(data, w)
     end
 end
 
+M['config.checks.interval'] = function(data, w)
+    if data <= 0 then
+        w.error('Checks interval must be > 0')
+    end
+end
+
 -- }}} config
 
 -- {{{ credentials
