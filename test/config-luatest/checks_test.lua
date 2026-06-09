@@ -118,6 +118,186 @@ end
 
 -- }}} Transparent Huge Pages check
 
+-- {{{ Readahead check
+
+g.test_readahead_alert_above_threshold = function(g)
+    local builder = cbuilder:new():add_instance('i-001', {})
+    builder = builder:set_instance_option('i-001', 'config.checks', {
+        readahead = true,
+    })
+    builder = builder:set_instance_option('i-001', 'iproto', {
+        readahead = 1048512,
+    })
+    local config = builder:config()
+
+    g.cluster = cluster:new(config)
+    g.cluster:start()
+
+    g.cluster['i-001']:exec(function()
+        local t = require('luatest')
+
+        local alerts = box.info.config.alerts
+        local found = false
+        for _, alert in ipairs(alerts) do
+            if alert.message ~= nil and
+                    string.find(alert.message, 'readahead', 1,
+                        true) ~= nil then
+                found = true
+                break
+            end
+        end
+        t.assert(found, 'Readahead alert not found')
+    end)
+end
+
+g.test_readahead_no_alert_below_threshold = function(g)
+    local builder = cbuilder:new():add_instance('i-001', {})
+    builder = builder:set_instance_option('i-001', 'config.checks', {
+        readahead = true,
+    })
+    builder = builder:set_instance_option('i-001', 'iproto', {
+        readahead = 1048511,
+    })
+    local config = builder:config()
+
+    g.cluster = cluster:new(config)
+    g.cluster:start()
+
+    g.cluster['i-001']:exec(function()
+        local t = require('luatest')
+
+        local alerts = box.info.config.alerts
+        local found = false
+        for _, alert in ipairs(alerts) do
+            if alert.message ~= nil and
+                    string.find(alert.message, 'readahead', 1,
+                        true) ~= nil then
+                found = true
+                break
+            end
+        end
+        t.assert_not(found, 'Readahead alert must be absent below threshold')
+    end)
+end
+
+g.test_readahead_alert_check_disabled = function(g)
+    local builder = cbuilder:new():add_instance('i-001', {})
+    builder = builder:set_instance_option('i-001', 'config.checks', {
+        readahead = false,
+    })
+    builder = builder:set_instance_option('i-001', 'iproto', {
+        readahead = 1048512,
+    })
+    local config = builder:config()
+
+    g.cluster = cluster:new(config)
+    g.cluster:start()
+
+    g.cluster['i-001']:exec(function()
+        local t = require('luatest')
+
+        local alerts = box.info.config.alerts
+        local found = false
+        for _, alert in ipairs(alerts) do
+            if alert.message ~= nil and
+                    string.find(alert.message, 'readahead', 1,
+                        true) ~= nil then
+                found = true
+                break
+            end
+        end
+        t.assert_not(found,
+            'Readahead alert must be absent when check is disabled')
+    end)
+end
+
+g.test_readahead_alert_disabled_by_default = function(g)
+    local builder = cbuilder:new():add_instance('i-001', {})
+    builder = builder:set_instance_option('i-001', 'iproto', {
+        readahead = 1048512,
+    })
+    local config = builder:config()
+
+    g.cluster = cluster:new(config)
+    g.cluster:start()
+
+    g.cluster['i-001']:exec(function()
+        local t = require('luatest')
+
+        local alerts = box.info.config.alerts
+        local found = false
+        for _, alert in ipairs(alerts) do
+            if alert.message ~= nil and
+                    string.find(alert.message, 'readahead', 1,
+                        true) ~= nil then
+                found = true
+                break
+            end
+        end
+        t.assert_not(found,
+            'Readahead alert must be absent by default')
+    end)
+end
+
+g.test_readahead_alert_via_box_cfg = function(g)
+    local builder = cbuilder:new():add_instance('i-001', {})
+    builder = builder:set_instance_option('i-001', 'config.checks', {
+        readahead = true,
+        interval = 1,
+    })
+    local config = builder:config()
+
+    g.cluster = cluster:new(config)
+    g.cluster:start()
+
+    g.cluster['i-001']:exec(function()
+        local t = require('luatest')
+        local fiber = require('fiber')
+
+        t.assert_equals(box.cfg.readahead, 16320)
+
+        local alerts = box.info.config.alerts
+        local found = false
+        for _, alert in ipairs(alerts) do
+            if alert.message ~= nil and
+                    string.find(alert.message, 'readahead', 1,
+                        true) ~= nil then
+                found = true
+                break
+            end
+        end
+        t.assert_not(found,
+            'Readahead alert must be absent with default readahead')
+
+        box.cfg{readahead = 1048520}
+
+        local cond = fiber.cond()
+        local watcher = box.watch('config.info', function(_, info)
+            if info.status == 'check_warnings' then
+                cond:signal()
+            end
+        end)
+        local ok = cond:wait(5)
+        watcher:unregister()
+        t.assert(ok, 'Timed out waiting for check_warnings status')
+
+        local alerts2 = box.info.config.alerts
+        local found2 = false
+        for _, alert in ipairs(alerts2) do
+            if alert.message ~= nil and
+                    string.find(alert.message, 'readahead', 1,
+                        true) ~= nil then
+                found2 = true
+                break
+            end
+        end
+        t.assert(found2,
+            'Readahead alert not found after box.cfg change')
+    end)
+end
+
+-- }}} Readahead check
+
 -- {{{ Fiber-based checks
 
 g.test_fiber_detects_thp_enabled = function(g)

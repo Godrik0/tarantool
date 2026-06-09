@@ -474,6 +474,10 @@ return schema.new('instance_config', schema.record({
                 type = 'boolean',
                 default = false,
             }),
+            readahead = schema.scalar({
+                type = 'boolean',
+                default = false,
+            }),
         }),
     }),
     process = schema.record({
