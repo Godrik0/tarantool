@@ -64,6 +64,8 @@ memtx_block_rv_new(uint32_t version, struct rlist *list)
 		assert(l->version > prev_version);
 		stailq_create(&l->blocks);
 		l->mem_used = 0;
+		stailq_create(&l->raw_blocks);
+		l->raw_mem_used = 0;
 		prev_version = l->version;
 		l++;
 	}
@@ -74,6 +76,8 @@ memtx_block_rv_new(uint32_t version, struct rlist *list)
 	(void)prev_version;
 	stailq_create(&l->blocks);
 	l->mem_used = 0;
+	stailq_create(&l->raw_blocks);
+	l->raw_mem_used = 0;
 	rlist_add_tail_entry(list, new_rv, link);
 	new_rv->refs = 1;
 	return new_rv;
@@ -81,9 +85,12 @@ memtx_block_rv_new(uint32_t version, struct rlist *list)
 
 void
 memtx_block_rv_delete(struct memtx_block_rv *rv, struct rlist *list,
-		      struct stailq *blocks_to_free, size_t *mem_freed)
+		      struct stailq *blocks_to_free, size_t *mem_freed,
+		      struct stailq *raw_blocks_to_free,
+		      size_t *raw_mem_freed)
 {
 	*mem_freed = 0;
+	*raw_mem_freed = 0;
 	assert(rv->refs > 0);
 	if (--rv->refs > 0)
 		return;
@@ -119,6 +126,8 @@ memtx_block_rv_delete(struct memtx_block_rv *rv, struct rlist *list,
 			}
 			stailq_concat(&dst->blocks, &src->blocks);
 			dst->mem_used += src->mem_used;
+			stailq_concat(&dst->raw_blocks, &src->raw_blocks);
+			dst->raw_mem_used += src->raw_mem_used;
 			j++;
 		} else {
 			/*
@@ -128,6 +137,8 @@ memtx_block_rv_delete(struct memtx_block_rv *rv, struct rlist *list,
 			 */
 			stailq_concat(blocks_to_free, &src->blocks);
 			*mem_freed += src->mem_used;
+			stailq_concat(raw_blocks_to_free, &src->raw_blocks);
+			*raw_mem_freed += src->raw_mem_used;
 		}
 		i++;
 	}
@@ -135,21 +146,20 @@ memtx_block_rv_delete(struct memtx_block_rv *rv, struct rlist *list,
 	free(rv);
 }
 
-void
-memtx_block_rv_add(struct memtx_block_rv *rv, struct memtx_block *block,
-		   size_t mem_used)
+/**
+ * Binary searches the list with the minimal version such that
+ * list->version > version.
+ */
+static struct memtx_block_rv_list *
+memtx_block_rv_list_find(struct memtx_block_rv *rv, uint32_t version)
 {
-	/*
-	 * Binary search the list with min version such that
-	 * list->version > block->version.
-	 */
 	int begin = 0;
 	int end = rv->count;
 	struct memtx_block_rv_list *found = nullptr;
 	while (begin != end) {
 		int middle = begin + (end - begin) / 2;
 		struct memtx_block_rv_list *l = &rv->lists[middle];
-		if (l->version <= block->version) {
+		if (l->version <= version) {
 			begin = middle + 1;
 		} else {
 			found = l;
@@ -157,8 +167,27 @@ memtx_block_rv_add(struct memtx_block_rv *rv, struct memtx_block *block,
 		}
 	}
 	assert(found != nullptr);
+	return found;
+}
+
+void
+memtx_block_rv_add(struct memtx_block_rv *rv, struct memtx_block *block,
+		   size_t mem_used)
+{
+	struct memtx_block_rv_list *found =
+		memtx_block_rv_list_find(rv, block->version);
 	stailq_add_entry(&found->blocks, block, in_gc);
 	found->mem_used += mem_used;
+}
+
+void
+memtx_raw_block_rv_add(struct memtx_block_rv *rv,
+		       struct memtx_raw_block *block, size_t mem_used)
+{
+	struct memtx_block_rv_list *found =
+		memtx_block_rv_list_find(rv, block->version);
+	stailq_add_entry(&found->raw_blocks, block, in_gc);
+	found->raw_mem_used += mem_used;
 }
 
 void

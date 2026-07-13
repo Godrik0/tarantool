@@ -42,6 +42,7 @@
 #include "allocator.h"
 #include "fiber.h"
 #include "index.h"
+#include "memtx_allocator.h"
 #include "memtx_engine.h"
 #include "memtx_index.h"
 #include "memtx_tx.h"
@@ -116,18 +117,17 @@ public:
 	}
 
 	pointer
-	allocate(size_type count) const
+	allocate(size_type count) noexcept
 	{
 		static_assert((alignment_ak & (alignment_ak - 1)) == 0,
 			      "alignment must be a power of two");
 		size_t data_size = count * sizeof(value_type);
 		if (count != 0 && data_size / count != sizeof(value_type))
 			return NULL;
-		size_t total_size = data_size + alignment_ak - 1 +
-				    sizeof(struct allocation);
+		size_t total_size = data_size + OVERHEAD;
 		if (total_size < data_size)
 			return NULL;
-		void *raw = SmallAlloc::alloc(total_size);
+		void *raw = MemtxAllocator<SmallAlloc>::alloc_raw(total_size);
 		if (raw == NULL)
 			return NULL;
 		uintptr_t data = (uintptr_t)raw + sizeof(struct allocation);
@@ -137,31 +137,53 @@ public:
 			((struct allocation *)aligned) - 1;
 		allocation->raw = raw;
 		allocation->size = total_size;
+		total_allocated_ += total_size;
+		total_wasted_ += OVERHEAD;
 		return (pointer)aligned;
 	}
 
 	void
-	deallocate(pointer ptr, size_type) const
+	deallocate(pointer ptr, size_type) noexcept
 	{
 		if (ptr == NULL)
 			return;
 		struct allocation *allocation =
 			((struct allocation *)ptr) - 1;
-		SmallAlloc::free(allocation->raw, allocation->size);
+		size_t total_size = allocation->size;
+		assert(total_allocated_ >= total_size);
+		assert(total_wasted_ >= OVERHEAD);
+		total_allocated_ -= total_size;
+		total_wasted_ -= OVERHEAD;
+		MemtxAllocator<SmallAlloc>::free_raw(allocation->raw,
+						     total_size);
 	}
 
+	/**
+	 * Total size, in bytes, obtained from the underlying allocator for
+	 * currently live allocations (useful data plus alignment/header
+	 * overhead). Used by USearch's memory_usage() to report the actual
+	 * memory footprint.
+	 */
 	size_t
 	total_allocated() const noexcept
 	{
-		return 0;
+		return total_allocated_;
 	}
 
+	/**
+	 * Total alignment/header overhead, in bytes, for currently live
+	 * allocations (part of total_allocated()).
+	 */
 	size_t
 	total_wasted() const noexcept
 	{
-		return 0;
+		return total_wasted_;
 	}
 
+	/**
+	 * This allocator never reserves memory ahead of individual
+	 * allocate() calls, so nothing is "reserved but not yet used".
+	 */
 	size_t
 	total_reserved() const noexcept
 	{
@@ -176,6 +198,17 @@ private:
 		/** Size passed to the underlying allocator. */
 		size_t size;
 	};
+	/**
+	 * Constant per-allocation overhead: alignment padding plus the
+	 * `allocation` header. Independent of `count`, since `allocate()`
+	 * always over-allocates by the same amount to fit them.
+	 */
+	static constexpr size_t OVERHEAD =
+		alignment_ak - 1 + sizeof(struct allocation);
+	/** Sum of `allocation::size` over all currently live allocations. */
+	size_t total_allocated_ = 0;
+	/** Sum of alignment/header overhead over all live allocations. */
+	size_t total_wasted_ = 0;
 };
 
 template <typename element_a, typename element_b, size_t alignment_ak>
@@ -784,9 +817,13 @@ static ssize_t
 memtx_vector_index_bsize(struct index *base)
 {
 	struct memtx_vector_index *index = (struct memtx_vector_index *)base;
+	/*
+	 * index.memory_usage() already accounts for the USearch graph and
+	 * the copied vectors (both go through memtx_vector_allocator_gt,
+	 * which now reports real total_allocated()/total_wasted() to
+	 * USearch, see MemtxAllocator::alloc_raw()/free_raw()).
+	 */
 	return (ssize_t)(index->index.memory_usage() +
-			 index->index.capacity() * index->dimension *
-				 sizeof(float) +
 			 matras_extent_count(&index->id_to_tuple) *
 				 MEMTX_EXTENT_SIZE +
 			 mh_vector_index_memsize(index->tuple_to_id));

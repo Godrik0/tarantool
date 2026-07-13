@@ -616,10 +616,87 @@ test_alloc_block_aligned()
 	check_plan();
 }
 
+/**
+ * Checks alloc_raw()/free_raw() basic round trip and statistics, mirroring
+ * test_alloc_block() for the tuple-header path.
+ */
+static void
+test_alloc_raw()
+{
+	plan(6);
+	header();
+
+	struct memtx_allocator_stats stats;
+	memtx_allocators_stats(&stats);
+	is(stats.used_total, 0, "used_total before alloc");
+
+	void *data = MemtxAllocator<SmallAlloc>::alloc_raw(123);
+	isnt(data, nullptr, "alloc_raw returns data");
+	memset(data, 0, 123);
+
+	struct memtx_raw_block *block = memtx_raw_block_from_data(data);
+	is(memtx_raw_block_size(block), 16 + 123, "total size");
+
+	memtx_allocators_stats(&stats);
+	is(stats.used_total, 16 + 123, "used_total after alloc");
+
+	MemtxAllocator<SmallAlloc>::free_raw(data, 123);
+
+	memtx_allocators_stats(&stats);
+	is(stats.used_total, 0, "used_total after free");
+	is(MemtxAllocator<SmallAlloc>::collect_raw_garbage(), false,
+	   "no garbage to collect");
+
+	footer();
+	check_plan();
+}
+
+/**
+ * Checks that freeing of a raw block is delayed while it is visible from an
+ * open read view, and freed once the read view is closed, mirroring
+ * test_free_delayed_if_alloc_before_read_view() for the tuple path.
+ */
+static void
+test_raw_free_delayed_if_alloc_before_read_view()
+{
+	plan(6);
+	header();
+
+	struct read_view_opts opts;
+	read_view_opts_create(&opts);
+	struct memtx_allocator_stats stats;
+
+	void *data = MemtxAllocator<SmallAlloc>::alloc_raw(64);
+	isnt(data, nullptr, "alloc_raw returns data");
+	is(MemtxAllocator<SmallAlloc>::in_read_view_raw(
+		   memtx_raw_block_from_data(data)),
+	   false, "not in rv");
+
+	memtx_allocators_read_view rv = memtx_allocators_open_read_view(&opts);
+	is(MemtxAllocator<SmallAlloc>::in_read_view_raw(
+		   memtx_raw_block_from_data(data)),
+	   true, "in rv");
+
+	MemtxAllocator<SmallAlloc>::free_raw(data, 64);
+	memtx_allocators_stats(&stats);
+	is(stats.used_rv, 16 + 64, "used_rv after free while rv is open");
+
+	memtx_allocators_close_read_view(rv);
+	memtx_allocators_stats(&stats);
+	is(stats.used_rv, 0, "used_rv after rv closed");
+	is(stats.used_gc, 16 + 64, "used_gc after rv closed");
+
+	while (MemtxAllocator<SmallAlloc>::collect_raw_garbage()) {
+	}
+
+	footer();
+	check_plan();
+}
+
 static int
 test_main()
 {
-	plan(11);
+	plan(13);
 	header();
 
 	test_alloc_stats();
@@ -633,6 +710,8 @@ test_main()
 	test_mem_used();
 	test_alloc_block();
 	test_alloc_block_aligned();
+	test_alloc_raw();
+	test_raw_free_delayed_if_alloc_before_read_view();
 
 	footer();
 	return check_plan();

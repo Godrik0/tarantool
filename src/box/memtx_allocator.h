@@ -106,6 +106,59 @@ memtx_block_data(struct memtx_block *block)
 }
 
 /**
+ * Block of allocated memory, with read view support, for data that has no
+ * tuple header (unlike memtx_block). Used by auxiliary index structures,
+ * see MemtxAllocator::alloc_raw()/free_raw().
+ */
+struct PACKED memtx_raw_block {
+	union {
+		struct PACKED {
+			/**
+			 * Most recent read view's version at the time when
+			 * the block was allocated. This field and `padding'
+			 * below are overwritten by `in_gc' once the block is
+			 * queued for garbage collection, so `version' must
+			 * not be read after that point.
+			 */
+			uint32_t version;
+			/** Padding, to keep size 8-byte aligned. */
+			uint32_t padding;
+			/** Size of the data following the header. */
+			size_t size;
+		};
+		/** Link in a block garbage collection list. */
+		struct stailq_entry in_gc;
+	};
+};
+
+static_assert(sizeof(struct memtx_raw_block) == 16, "Just to be sure");
+static_assert(sizeof(struct stailq_entry) <=
+	      offsetof(struct memtx_raw_block, size),
+	      "in_gc must not overlap with size");
+
+/** Returns total size of a raw block: the header + the data size. */
+static inline size_t
+memtx_raw_block_size(struct memtx_raw_block *block)
+{
+	return sizeof(struct memtx_raw_block) + block->size;
+}
+
+/** Returns the pointer to the allocated data, not including the header. */
+static inline void *
+memtx_raw_block_data(struct memtx_raw_block *block)
+{
+	return (char *)block + sizeof(struct memtx_raw_block);
+}
+
+/** Returns the raw block that owns the given data pointer. */
+static inline struct memtx_raw_block *
+memtx_raw_block_from_data(void *data)
+{
+	return (struct memtx_raw_block *)((char *)data -
+					   sizeof(struct memtx_raw_block));
+}
+
+/**
  * List of blocks owned by a read view.
  *
  * See the comment to memtx_block_rv for details.
@@ -117,6 +170,10 @@ struct memtx_block_rv_list {
 	size_t mem_used;
 	/** List of blocks, linked by memtx_block::in_gc. */
 	struct stailq blocks;
+	/** Same as mem_used, but for raw_blocks. */
+	size_t raw_mem_used;
+	/** List of raw blocks, linked by memtx_raw_block::in_gc. */
+	struct stailq raw_blocks;
 };
 
 /**
@@ -202,12 +259,15 @@ memtx_block_rv_new(uint32_t version, struct rlist *list);
 /**
  * Deletes a list array. Blocks that are still visible from other read views
  * are moved to the older read view's lists. Blocks that are not visible from
- * any read view are appended to the blocks_to_free list. Size of memory that
- * can be freed is stored in mem_freed.
+ * any read view are appended to the blocks_to_free list, and raw blocks to
+ * raw_blocks_to_free. Size of memory that can be freed is stored in
+ * mem_freed and raw_mem_freed respectively.
  */
 void
 memtx_block_rv_delete(struct memtx_block_rv *rv, struct rlist *list,
-		      struct stailq *blocks_to_free, size_t *mem_freed);
+		      struct stailq *blocks_to_free, size_t *mem_freed,
+		      struct stailq *raw_blocks_to_free,
+		      size_t *raw_mem_freed);
 
 /**
  * Adds a freed block to a read view's list.
@@ -218,6 +278,11 @@ memtx_block_rv_delete(struct memtx_block_rv *rv, struct rlist *list,
 void
 memtx_block_rv_add(struct memtx_block_rv *rv, struct memtx_block *block,
 		   size_t mem_used);
+
+/** Same as memtx_block_rv_add(), but for a memtx_raw_block. */
+void
+memtx_raw_block_rv_add(struct memtx_block_rv *rv,
+		       struct memtx_raw_block *block, size_t mem_used);
 
 /** MemtxAllocator statistics. */
 struct memtx_allocator_stats {
@@ -268,13 +333,14 @@ public:
 	{
 		memtx_allocator_stats_create(&stats);
 		stailq_create(&gc);
+		stailq_create(&raw_gc);
 		for (int type = 0; type < memtx_block_rv_type_MAX; type++)
 			rlist_create(&read_views[type]);
 	}
 
 	static void destroy()
 	{
-		while (collect_garbage()) {
+		while (collect_garbage() || collect_raw_garbage()) {
 		}
 	}
 
@@ -318,11 +384,14 @@ public:
 			if (rv->rv[type] == nullptr)
 				continue;
 			size_t mem_freed = 0;
+			size_t raw_mem_freed = 0;
 			memtx_block_rv_delete(rv->rv[type], &read_views[type],
-					      &gc, &mem_freed);
-			assert(stats.used_rv >= mem_freed);
-			stats.used_rv -= mem_freed;
-			stats.used_gc += mem_freed;
+					      &gc, &mem_freed,
+					      &raw_gc, &raw_mem_freed);
+			size_t total_freed = mem_freed + raw_mem_freed;
+			assert(stats.used_rv >= total_freed);
+			stats.used_rv -= total_freed;
+			stats.used_gc += total_freed;
 		}
 		TRASH(rv);
 		::free(rv);
@@ -336,6 +405,16 @@ public:
 	in_read_view(const struct memtx_block *block, bool is_temporary = false)
 	{
 		struct memtx_block_rv *rv = get_last_rv(is_temporary);
+		if (rv == nullptr)
+			return false;
+		return block->version < memtx_block_rv_version(rv);
+	}
+
+	/** Same as in_read_view(), but for a memtx_raw_block. */
+	static bool
+	in_read_view_raw(const struct memtx_raw_block *block)
+	{
+		struct memtx_block_rv *rv = get_last_rv(false);
 		if (rv == nullptr)
 			return false;
 		return block->version < memtx_block_rv_version(rv);
@@ -406,6 +485,49 @@ public:
 	}
 
 	/**
+	 * Allocates `size' bytes of memory that have no tuple header, unlike
+	 * alloc(). Used by auxiliary index structures (e.g. the USearch graph
+	 * of the VECTOR index) to make their memory quota-aware and visible
+	 * in MemtxAllocator statistics, without paying for a tuple header.
+	 *
+	 * Always treated as belonging to a non-data-temporary space (see
+	 * memtx_block_rv_type), since callers have no space context at hand;
+	 * this can only make blocks live somewhat longer than strictly
+	 * necessary while a read view is open, never shorter.
+	 *
+	 * Returns a pointer to the allocated data, to be freed with
+	 * free_raw().
+	 */
+	static void *alloc_raw(size_t size)
+	{
+		struct memtx_raw_block *block = alloc_raw_impl(size);
+		if (block == nullptr)
+			return nullptr;
+		return memtx_raw_block_data(block);
+	}
+
+	/**
+	 * Frees memory allocated with alloc_raw(). `size' must be the same
+	 * value that was passed to the corresponding alloc_raw() call.
+	 */
+	static void free_raw(void *data, size_t size)
+	{
+		if (data == nullptr)
+			return;
+		struct memtx_raw_block *block = memtx_raw_block_from_data(data);
+		assert(block->size == size);
+		(void)size;
+		if (!in_read_view_raw(block)) {
+			free_raw_impl(block);
+		} else {
+			size_t block_size = memtx_raw_block_size(block);
+			stats.used_rv += block_size;
+			struct memtx_block_rv *rv = get_last_rv(false);
+			memtx_raw_block_rv_add(rv, block, block_size);
+		}
+	}
+
+	/**
 	 * Does a garbage collection step. Returns false if there's no more
 	 * blocks to collect.
 	 */
@@ -420,6 +542,21 @@ public:
 			free_impl(block);
 		}
 		return !stailq_empty(&gc);
+	}
+
+	/** Same as collect_garbage(), but for raw blocks. */
+	static bool collect_raw_garbage()
+	{
+		for (int i = 0; !stailq_empty(&raw_gc) && i < GC_BATCH_SIZE;
+		     i++) {
+			struct memtx_raw_block *block = stailq_shift_entry(
+					&raw_gc, struct memtx_raw_block, in_gc);
+			size_t size = memtx_raw_block_size(block);
+			assert(stats.used_gc >= size);
+			stats.used_gc -= size;
+			free_raw_impl(block);
+		}
+		return !stailq_empty(&raw_gc);
 	}
 
 private:
@@ -456,6 +593,42 @@ private:
 		Allocator::free(block, size);
 	}
 
+	/** Same as alloc_impl(), but for a memtx_raw_block. */
+	static struct memtx_raw_block *alloc_raw_impl(size_t size)
+	{
+		collect_raw_garbage();
+		size_t total_size = sizeof(struct memtx_raw_block) + size;
+		if (total_size < size)
+			return nullptr;
+		void *ptr = Allocator::alloc(total_size);
+		if (ptr == nullptr)
+			return nullptr;
+		struct memtx_raw_block *block =
+			(struct memtx_raw_block *)ptr;
+		block->size = size;
+		stats.used_total += total_size;
+		/* Use low-resolution clock, because it's hot path. */
+		double now = clock_lowres_monotonic();
+		if (read_view_version > 0 && read_view_reuse_interval > 0 &&
+		    now - read_view_timestamp < read_view_reuse_interval) {
+			/* See the comment to read_view_reuse_interval. */
+			block->version = read_view_version - 1;
+		} else {
+			block->version = read_view_version;
+			may_reuse_read_view = false;
+		}
+		return block;
+	}
+
+	/** Same as free_impl(), but for a memtx_raw_block. */
+	static void free_raw_impl(struct memtx_raw_block *block)
+	{
+		size_t size = memtx_raw_block_size(block);
+		assert(stats.used_total >= size);
+		stats.used_total -= size;
+		Allocator::free(block, size);
+	}
+
 	/** Returns the most recent open read view. */
 	static struct memtx_block_rv *
 	get_last_rv(bool is_temporary)
@@ -474,6 +647,8 @@ private:
 	 * We collect blocks from this list on allocation.
 	 */
 	static struct stailq gc;
+	/** Same as gc, but for memtx_raw_block, linked by in_gc. */
+	static struct stailq raw_gc;
 	/**
 	 * Most recent read view's version.
 	 *
@@ -521,6 +696,9 @@ private:
 
 template<class Allocator>
 struct stailq MemtxAllocator<Allocator>::gc;
+
+template<class Allocator>
+struct stailq MemtxAllocator<Allocator>::raw_gc;
 
 template<class Allocator>
 uint32_t MemtxAllocator<Allocator>::read_view_version;
