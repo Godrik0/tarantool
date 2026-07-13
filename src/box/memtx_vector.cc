@@ -32,12 +32,14 @@
 
 #include <math.h>
 #include <new>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <small/matras.h>
 #include <small/mempool.h>
 
+#include "allocator.h"
 #include "fiber.h"
 #include "index.h"
 #include "memtx_engine.h"
@@ -89,6 +91,109 @@
 #undef EV_NONE
 #endif
 
+template <typename element_at, size_t alignment_ak>
+class memtx_vector_allocator_gt {
+public:
+	using value_type = element_at;
+	using size_type = size_t;
+	using pointer = element_at *;
+	using const_pointer = const element_at *;
+
+	template <typename other_element_at>
+	struct rebind {
+		using other =
+			memtx_vector_allocator_gt<other_element_at,
+						  alignment_ak>;
+	};
+
+	memtx_vector_allocator_gt() = default;
+
+	template <typename other_element_at>
+	memtx_vector_allocator_gt(
+		const memtx_vector_allocator_gt<other_element_at,
+						alignment_ak> &) noexcept
+	{
+	}
+
+	pointer
+	allocate(size_type count) const
+	{
+		static_assert((alignment_ak & (alignment_ak - 1)) == 0,
+			      "alignment must be a power of two");
+		size_t data_size = count * sizeof(value_type);
+		if (count != 0 && data_size / count != sizeof(value_type))
+			return NULL;
+		size_t total_size = data_size + alignment_ak - 1 +
+				    sizeof(struct allocation);
+		if (total_size < data_size)
+			return NULL;
+		void *raw = SmallAlloc::alloc(total_size);
+		if (raw == NULL)
+			return NULL;
+		uintptr_t data = (uintptr_t)raw + sizeof(struct allocation);
+		uintptr_t aligned = (data + alignment_ak - 1) &
+				    ~(uintptr_t)(alignment_ak - 1);
+		struct allocation *allocation =
+			((struct allocation *)aligned) - 1;
+		allocation->raw = raw;
+		allocation->size = total_size;
+		return (pointer)aligned;
+	}
+
+	void
+	deallocate(pointer ptr, size_type) const
+	{
+		if (ptr == NULL)
+			return;
+		struct allocation *allocation =
+			((struct allocation *)ptr) - 1;
+		SmallAlloc::free(allocation->raw, allocation->size);
+	}
+
+	size_t
+	total_allocated() const noexcept
+	{
+		return 0;
+	}
+
+	size_t
+	total_wasted() const noexcept
+	{
+		return 0;
+	}
+
+	size_t
+	total_reserved() const noexcept
+	{
+		return 0;
+	}
+
+private:
+	/** Allocation metadata stored right before the aligned pointer. */
+	struct allocation {
+		/** Pointer returned by the underlying allocator. */
+		void *raw;
+		/** Size passed to the underlying allocator. */
+		size_t size;
+	};
+};
+
+template <typename element_a, typename element_b, size_t alignment_ak>
+static inline bool
+operator==(const memtx_vector_allocator_gt<element_a, alignment_ak> &,
+	   const memtx_vector_allocator_gt<element_b, alignment_ak> &)
+{
+	return true;
+}
+
+template <typename element_a, typename element_b, size_t alignment_ak>
+static inline bool
+operator!=(const memtx_vector_allocator_gt<element_a, alignment_ak> &,
+	   const memtx_vector_allocator_gt<element_b, alignment_ak> &)
+{
+	return false;
+}
+
 struct vector_hash_entry {
 	struct tuple *tuple;
 	uint32_t id;
@@ -119,7 +224,18 @@ struct vector_hash_entry {
  */
 #define mh_int_t uint32_t
 
-using usearch_index_t = unum::usearch::index_dense_gt<uint32_t, uint32_t>;
+using usearch_byte_t = unum::usearch::byte_t;
+using usearch_dynamic_allocator_t =
+	memtx_vector_allocator_gt<usearch_byte_t, 64>;
+using usearch_tape_allocator_t =
+	memtx_vector_allocator_gt<usearch_byte_t, 64>;
+using usearch_vectors_tape_allocator_t =
+	memtx_vector_allocator_gt<usearch_byte_t, 8>;
+using usearch_index_t =
+	unum::usearch::index_dense_gt<uint32_t, uint32_t,
+				      usearch_dynamic_allocator_t,
+				      usearch_tape_allocator_t,
+				      usearch_vectors_tape_allocator_t>;
 using usearch_metric_kind_t = unum::usearch::metric_kind_t;
 using usearch_metric_t = unum::usearch::metric_punned_t;
 using usearch_index_limits_t = unum::usearch::index_limits_t;
@@ -161,6 +277,53 @@ struct vector_index_iterator {
 static_assert(sizeof(struct vector_index_iterator) <= MEMTX_ITERATOR_SIZE,
 	      "sizeof(struct vector_index_iterator) must be less than or equal "
 	      "to MEMTX_ITERATOR_SIZE");
+
+/** VECTOR index read view. */
+struct vector_read_view {
+	/** Base class. */
+	struct index_read_view base;
+	/** Copied USearch index. */
+	usearch_index_t index;
+	/** Snapshot mapping from USearch ids to tuples. */
+	struct tuple **id_to_tuple;
+	/** Number of entries in id_to_tuple. */
+	uint32_t id_count;
+	/** Used for clarifying read view tuples. */
+	struct memtx_tx_snapshot_cleaner cleaner;
+};
+
+/** Heap state for a VECTOR read view iterator. */
+struct vector_read_view_iterator_state {
+	/** Iterator type. */
+	enum vector_iterator_type type;
+	/** Materialized tuples. */
+	struct tuple **tuples;
+	/** Number of materialized tuples. */
+	size_t tuple_count;
+	/** Tuple array capacity. */
+	size_t tuple_capacity;
+	/** Current position in tuples. */
+	size_t position;
+	/** Number of already consumed USearch results. */
+	size_t fetched_count;
+	/** Decoded query vector. */
+	float *query;
+	/** Current USearch search limit. */
+	size_t search_limit;
+};
+
+/** VECTOR read view iterator. */
+struct vector_read_view_iterator {
+	/** Base class. */
+	struct index_read_view_iterator_base base;
+	/** Heap-allocated iterator state. */
+	struct vector_read_view_iterator_state *state;
+};
+
+static_assert(sizeof(struct vector_read_view_iterator) <=
+	      INDEX_READ_VIEW_ITERATOR_SIZE,
+	      "sizeof(struct vector_read_view_iterator) must be less than or "
+	      "equal to INDEX_READ_VIEW_ITERATOR_SIZE");
 
 struct vector_id_reservation {
 	uint32_t id;
@@ -622,6 +785,8 @@ memtx_vector_index_bsize(struct index *base)
 {
 	struct memtx_vector_index *index = (struct memtx_vector_index *)base;
 	return (ssize_t)(index->index.memory_usage() +
+			 index->index.capacity() * index->dimension *
+				 sizeof(float) +
 			 matras_extent_count(&index->id_to_tuple) *
 				 MEMTX_EXTENT_SIZE +
 			 mh_vector_index_memsize(index->tuple_to_id));
@@ -634,6 +799,291 @@ memtx_vector_index_count(struct index *base, enum iterator_type type,
 	if (type == ITER_ALL)
 		return memtx_vector_index_size(base);
 	return generic_index_count(base, type, key, part_count);
+}
+
+static struct vector_read_view_iterator *
+vector_read_view_iterator(struct index_read_view_iterator *iterator)
+{
+	return (struct vector_read_view_iterator *)iterator;
+}
+
+static struct tuple *
+vector_read_view_value_to_tuple(struct vector_read_view *rv, uint32_t value)
+{
+	if (value >= rv->id_count)
+		return NULL;
+	return rv->id_to_tuple[value];
+}
+
+static void
+vector_read_view_iterator_destroy_tuples(
+	struct vector_read_view_iterator_state *state)
+{
+	free(state->tuples);
+	state->tuples = NULL;
+	state->tuple_count = 0;
+	state->tuple_capacity = 0;
+}
+
+static void
+vector_read_view_iterator_destroy(struct index_read_view_iterator *iterator)
+{
+	struct vector_read_view_iterator *it =
+		vector_read_view_iterator(iterator);
+	struct vector_read_view_iterator_state *state = it->state;
+	if (state != NULL) {
+		vector_read_view_iterator_destroy_tuples(state);
+		free(state->query);
+		free(state);
+	}
+	TRASH(it);
+}
+
+static int
+vector_read_view_iterator_reserve(
+	struct vector_read_view_iterator_state *state, size_t count)
+{
+	if (count <= state->tuple_capacity)
+		return 0;
+
+	size_t capacity = state->tuple_capacity == 0 ? count :
+			  MAX(count, state->tuple_capacity * 2);
+	struct tuple **tuples = (struct tuple **)realloc(
+		state->tuples, capacity * sizeof(*tuples));
+	if (tuples == NULL) {
+		diag_set(OutOfMemory, capacity * sizeof(*tuples),
+			 "realloc", "vector read view iterator results");
+		return -1;
+	}
+	state->tuples = tuples;
+	state->tuple_capacity = capacity;
+	return 0;
+}
+
+static int
+vector_read_view_iterator_build_all(
+	struct vector_read_view_iterator_state *state, struct vector_read_view *rv)
+{
+	if (vector_read_view_iterator_reserve(state, rv->index.size()) != 0)
+		return -1;
+	for (uint32_t id = 0; id < rv->id_count; id++) {
+		struct tuple *tuple = rv->id_to_tuple[id];
+		if (tuple != NULL)
+			state->tuples[state->tuple_count++] = tuple;
+	}
+	return 0;
+}
+
+static int
+vector_read_view_iterator_fetch_more(
+	struct vector_read_view_iterator_state *state, struct vector_read_view *rv)
+{
+	size_t total = rv->index.size();
+	if (state->search_limit >= total)
+		return 0;
+
+	size_t wanted = state->search_limit == 0 ?
+			(size_t)VECTOR_INITIAL_BATCH :
+			MIN(total, state->search_limit * 2);
+	auto result = rv->index.search(state->query, wanted);
+	if (!result) {
+		memtx_vector_index_diag_set_usearch_error("search",
+							  result.error.what());
+		return -1;
+	}
+	if (result.count <= state->fetched_count) {
+		state->search_limit = wanted;
+		return 0;
+	}
+	if (vector_read_view_iterator_reserve(
+		    state, state->tuple_count +
+			   (result.count - state->fetched_count)) != 0)
+		return -1;
+
+	for (size_t i = state->fetched_count; i < result.count; i++) {
+		uint32_t id = result[i].member.key;
+		struct tuple *tuple = vector_read_view_value_to_tuple(rv, id);
+		if (tuple != NULL)
+			state->tuples[state->tuple_count++] = tuple;
+	}
+	state->fetched_count = result.count;
+	state->search_limit = wanted;
+	return 0;
+}
+
+static int
+vector_read_view_iterator_next_raw(
+	struct index_read_view_iterator *iterator,
+	struct read_view_tuple *result)
+{
+	struct vector_read_view_iterator *it =
+		vector_read_view_iterator(iterator);
+	struct vector_read_view_iterator_state *state = it->state;
+	struct vector_read_view *rv = (struct vector_read_view *)it->base.index;
+
+	for (;;) {
+		if (state->position >= state->tuple_count) {
+			if (state->type == VECTOR_ITERATOR_ALL) {
+				*result = read_view_tuple_none();
+				return 0;
+			}
+			int rc = vector_read_view_iterator_fetch_more(state,
+								      rv);
+			if (rc != 0)
+				return -1;
+			if (state->position >= state->tuple_count) {
+				*result = read_view_tuple_none();
+				return 0;
+			}
+		}
+		struct tuple *tuple = state->tuples[state->position++];
+		if (memtx_prepare_read_view_tuple(tuple, &rv->base,
+						  &rv->cleaner, result) != 0)
+			return -1;
+		if (result->data != NULL)
+			return 0;
+	}
+}
+
+static int
+vector_read_view_get_raw(struct index_read_view *rv, const char *key,
+			 uint32_t part_count, struct read_view_tuple *result)
+{
+	(void)key;
+	(void)part_count;
+	(void)result;
+	diag_set(UnsupportedIndexFeature, rv->def, "get() in read view");
+	return -1;
+}
+
+static int
+vector_read_view_create_iterator(struct index_read_view *base,
+				 enum iterator_type type, const char *key,
+				 uint32_t part_count, const char *pos,
+				 struct index_read_view_iterator *iterator)
+{
+	if (pos != NULL) {
+		diag_set(UnsupportedIndexFeature, base->def, "pagination");
+		return -1;
+	}
+	struct vector_read_view *rv = (struct vector_read_view *)base;
+	struct vector_read_view_iterator *it =
+		vector_read_view_iterator(iterator);
+	memset(it, 0, sizeof(*it));
+	it->base.index = base;
+	it->base.destroy = vector_read_view_iterator_destroy;
+	it->base.next_raw = vector_read_view_iterator_next_raw;
+	it->base.position = generic_index_read_view_iterator_position;
+	it->state = (struct vector_read_view_iterator_state *)
+		calloc(1, sizeof(*it->state));
+	if (it->state == NULL) {
+		diag_set(OutOfMemory, sizeof(*it->state), "calloc",
+			 "vector read view iterator");
+		return -1;
+	}
+
+	if (type == ITER_ALL) {
+		it->state->type = VECTOR_ITERATOR_ALL;
+		if (vector_read_view_iterator_build_all(it->state, rv) != 0)
+			goto fail;
+		return 0;
+	}
+
+	if (type != ITER_NEIGHBOR) {
+		diag_set(UnsupportedIndexFeature, base->def,
+			 "requested iterator type");
+		goto fail;
+	}
+	if (part_count != 1) {
+		diag_set(IllegalParams, "vector key must be full");
+		goto fail;
+	}
+	it->state->type = VECTOR_ITERATOR_NEIGHBOR;
+	it->state->query = memtx_vector_alloc(rv->base.def->opts.dimension,
+					      "vector read view query");
+	if (it->state->query == NULL)
+		goto fail;
+	if (memtx_vector_decode_array(it->state->query,
+				      rv->base.def->opts.dimension, key,
+				      "key") != 0)
+		goto fail;
+	return 0;
+fail:
+	vector_read_view_iterator_destroy(iterator);
+	return -1;
+}
+
+static void
+vector_read_view_free(struct index_read_view *base)
+{
+	struct vector_read_view *rv = (struct vector_read_view *)base;
+	free(rv->id_to_tuple);
+	memtx_tx_snapshot_cleaner_destroy(&rv->cleaner);
+	delete rv;
+}
+
+static struct index_read_view *
+memtx_vector_index_create_read_view(struct index *base)
+{
+	static const struct index_read_view_vtab vtab = {
+		.free = vector_read_view_free,
+		.count = generic_index_read_view_count,
+		.quantile = generic_index_read_view_quantile,
+		.get_raw = vector_read_view_get_raw,
+		.create_iterator = vector_read_view_create_iterator,
+		.create_iterator_with_offset =
+			generic_index_read_view_create_iterator_with_offset,
+		.create_arrow_stream =
+			generic_index_read_view_create_arrow_stream,
+	};
+	struct memtx_vector_index *index = (struct memtx_vector_index *)base;
+	struct vector_read_view *rv = new (std::nothrow) vector_read_view();
+	if (rv == NULL) {
+		diag_set(OutOfMemory, sizeof(*rv), "new",
+			 "vector read view");
+		return NULL;
+	}
+	rv->id_to_tuple = NULL;
+	rv->id_count = 0;
+	index_read_view_create(&rv->base, &vtab, base->def);
+	struct space *space = space_by_id(base->def->space_id);
+	assert(space != NULL);
+	memtx_tx_snapshot_cleaner_create(&rv->cleaner, space, base);
+
+	auto copy = index->index.copy();
+	if (!copy) {
+		memtx_vector_index_diag_set_usearch_error("copy",
+							  copy.error.what());
+		goto fail;
+	}
+	rv->index = std::move(copy.index);
+	rv->id_count = (uint32_t)index->id_to_tuple.head.block_count;
+	if (rv->id_count > 0) {
+		rv->id_to_tuple = (struct tuple **)calloc(
+			rv->id_count, sizeof(*rv->id_to_tuple));
+		if (rv->id_to_tuple == NULL) {
+			diag_set(OutOfMemory,
+				 rv->id_count * sizeof(*rv->id_to_tuple),
+				 "calloc", "vector read view tuples");
+			goto fail;
+		}
+	}
+
+	uint32_t pos;
+	mh_foreach(index->tuple_to_id, pos) {
+		struct vector_hash_entry *entry =
+			mh_vector_index_node(index->tuple_to_id, pos);
+		assert(entry->id < rv->id_count);
+		rv->id_to_tuple[entry->id] = entry->tuple;
+	}
+	return (struct index_read_view *)rv;
+
+fail:
+	free(rv->id_to_tuple);
+	index_def_delete(rv->base.def);
+	memtx_tx_snapshot_cleaner_destroy(&rv->cleaner);
+	delete rv;
+	return NULL;
 }
 
 static int
@@ -803,13 +1253,12 @@ static const struct index_vtab memtx_vector_index_vtab_base = {
 	/* .max = */ generic_index_max,
 	/* .random = */ generic_index_random,
 	/* .count = */ memtx_vector_index_count,
-	/* .get_internal = */ generic_index_get_internal,
 	/* .get = */ generic_index_get,
 	/* .create_iterator = */ memtx_vector_index_create_iterator,
 	/* .create_iterator_with_offset = */
 		generic_index_create_iterator_with_offset,
 	/* .create_arrow_stream = */ generic_index_create_arrow_stream,
-	/* .create_read_view = */ generic_index_create_read_view,
+	/* .create_read_view = */ memtx_vector_index_create_read_view,
 	/* .stat = */ generic_index_stat,
 	/* .compact = */ generic_index_compact,
 	/* .reset_stat = */ generic_index_reset_stat,
@@ -817,6 +1266,7 @@ static const struct index_vtab memtx_vector_index_vtab_base = {
 
 static const struct memtx_index_vtab memtx_vector_index_vtab = {
 	/* .base = */ memtx_vector_index_vtab_base,
+	/* .get_internal = */ generic_memtx_index_get_internal,
 	/* .replace = */ memtx_vector_index_replace,
 	/* .begin_build = */ generic_memtx_index_begin_build,
 	/* .reserve = */ memtx_vector_index_reserve,
