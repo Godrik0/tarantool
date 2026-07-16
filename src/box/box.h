@@ -580,6 +580,19 @@ box_select(uint32_t space_id, uint32_t index_id,
 	   const char **packed_pos, const char **packed_pos_end,
 	   bool update_pos, struct port *port);
 
+/**
+ * Find the nearest neighbors of a query vector in a VECTOR index and dump
+ * the result to port as a sequence of MsgPack [tuple, distance] pairs
+ * ordered by non-decreasing distance (see index_vtab::search).
+ *
+ * @a k is the max number of neighbors to return. @a ef_search overrides the
+ * index's own `ef_search' option for this query if non-negative.
+ */
+int
+box_index_search(uint32_t space_id, uint32_t index_id, const char *query,
+		 const char *query_end, uint32_t k, int64_t ef_search,
+		 struct port *port);
+
 /** \cond public */
 
 /*

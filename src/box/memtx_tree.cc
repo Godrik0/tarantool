@@ -2697,6 +2697,7 @@ static const struct index_vtab memtx_tree_disabled_index_vtab_base = {
 	/* .stat = */ generic_index_stat,
 	/* .compact = */ generic_index_compact,
 	/* .reset_stat = */ generic_index_reset_stat,
+	/* .search = */ generic_index_search,
 };
 
 static const struct memtx_index_vtab memtx_tree_disabled_index_vtab = {
@@ -2767,6 +2768,7 @@ get_memtx_tree_index_vtab(void)
 		/* .stat = */ generic_index_stat,
 		/* .compact = */ generic_index_compact,
 		/* .reset_stat = */ generic_index_reset_stat,
+		/* .search = */ generic_index_search,
 	};
 	static const struct memtx_index_vtab vtab = {
 		/* .base = */ vtab_base,

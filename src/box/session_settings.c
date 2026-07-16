@@ -288,6 +288,7 @@ static const struct index_vtab session_settings_index_vtab = {
 	/* .stat = */ generic_index_stat,
 	/* .compact = */ generic_index_compact,
 	/* .reset_stat = */ generic_index_reset_stat,
+	/* .search = */ generic_index_search,
 };
 
 static void

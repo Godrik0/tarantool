@@ -46,6 +46,7 @@
 #include "memtx_engine.h"
 #include "memtx_index.h"
 #include "memtx_tx.h"
+#include "port.h"
 #include "schema.h"
 #include "space.h"
 #include "trivia/util.h"
@@ -1273,6 +1274,119 @@ memtx_vector_index_create_iterator(struct index *base, enum iterator_type type,
 	return &it->base;
 }
 
+/**
+ * Encodes a MsgPack `[tuple, distance]' pair on the fiber region and appends
+ * it to @a port (see index_vtab::search).
+ */
+static int
+memtx_vector_index_search_add(struct port *port, struct tuple *tuple,
+			      double distance)
+{
+	uint32_t tuple_size;
+	const char *tuple_data = tuple_data_range(tuple, &tuple_size);
+	size_t size = mp_sizeof_array(2) + tuple_size +
+		      mp_sizeof_double(distance);
+	char *buf = (char *)region_alloc(&fiber()->gc, size);
+	if (buf == NULL) {
+		diag_set(OutOfMemory, size, "region_alloc",
+			 "vector search result");
+		return -1;
+	}
+	char *pos = mp_encode_array(buf, 2);
+	memcpy(pos, tuple_data, tuple_size);
+	pos += tuple_size;
+	pos = mp_encode_double(pos, distance);
+	assert(pos == buf + size);
+	port_c_add_mp(port, buf, pos);
+	return 0;
+}
+
+static int
+memtx_vector_index_search(struct index *base, const char *query,
+			  uint32_t part_count,
+			  const struct vector_search_opts *opts,
+			  struct port *port)
+{
+	struct memtx_vector_index *index = (struct memtx_vector_index *)base;
+	if (part_count != 1) {
+		diag_set(IllegalParams, "vector key must be full");
+		return -1;
+	}
+
+	float *vector = memtx_vector_alloc(index->dimension,
+					   "vector search query");
+	if (vector == NULL)
+		return -1;
+	if (memtx_vector_decode_array(vector, index->dimension, query,
+				      "key") != 0) {
+		free(vector);
+		return -1;
+	}
+
+	uint32_t k = opts->k;
+	if (k == 0) {
+		free(vector);
+		return 0;
+	}
+
+	bool ef_search_overridden = opts->ef_search >= 0;
+	size_t saved_ef_search = index->index.expansion_search();
+	if (ef_search_overridden)
+		index->index.change_expansion_search(
+			(size_t)opts->ef_search);
+
+	struct space *space = space_by_id(base->def->space_id);
+	struct txn *txn = in_txn();
+	size_t region_svp = region_used(&fiber()->gc);
+
+	int rc = 0;
+	size_t fetched = 0;
+	size_t found = 0;
+	size_t total = index->index.size();
+	size_t wanted = MIN(total, MAX((size_t)k,
+				       (size_t)VECTOR_INITIAL_BATCH));
+	while (found < k && fetched < total) {
+		auto result = index->index.search(vector, wanted);
+		if (!result) {
+			memtx_vector_index_diag_set_usearch_error(
+				"search", result.error.what());
+			rc = -1;
+			break;
+		}
+		if (result.count <= fetched)
+			break;
+		for (size_t i = fetched; i < result.count && found < k; i++) {
+			uint32_t id = result[i].member.key;
+			struct tuple *tuple =
+				memtx_vector_index_value_to_tuple(index, id);
+			if (tuple == NULL)
+				continue;
+			tuple = memtx_tx_tuple_clarify(txn, space, tuple,
+						       base, 0);
+			if (tuple == NULL)
+				continue;
+			if (memtx_vector_index_search_add(
+				    port, tuple, result[i].distance) != 0) {
+				rc = -1;
+				break;
+			}
+			found++;
+		}
+		if (rc != 0)
+			break;
+		fetched = result.count;
+		if (fetched >= total)
+			break;
+		wanted = MIN(total, wanted * 2);
+	}
+
+	region_truncate(&fiber()->gc, region_svp);
+	if (ef_search_overridden)
+		index->index.change_expansion_search(saved_ef_search);
+	free(vector);
+	return rc;
+}
+
 static const struct index_vtab memtx_vector_index_vtab_base = {
 	/* .destroy = */ memtx_vector_index_destroy,
 	/* .commit_create = */ generic_index_commit_create,
@@ -1299,6 +1413,7 @@ static const struct index_vtab memtx_vector_index_vtab_base = {
 	/* .stat = */ generic_index_stat,
 	/* .compact = */ generic_index_compact,
 	/* .reset_stat = */ generic_index_reset_stat,
+	/* .search = */ memtx_vector_index_search,
 };
 
 static const struct memtx_index_vtab memtx_vector_index_vtab = {

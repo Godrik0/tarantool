@@ -2269,6 +2269,34 @@ base_index_mt.get_luac = function(index, key)
     return internal.get(index.space_id, index.id, key)
 end
 
+-- Nearest neighbor search over a VECTOR index. Unlike select() with
+-- {iterator = 'NEIGHBOR'}, also returns the distance to the query vector
+-- for every match. Note: unlike select()/get(), the returned tuples are
+-- not bound to the space's format (no named field access), since they
+-- are reconstructed from a plain MsgPack array.
+base_index_mt.search = function(index, query, opts)
+    check_index_arg(index, 'search', 2)
+    local k = opts and opts.k
+    if type(k) ~= 'number' or k < 0 then
+        box.error(box.error.ILLEGAL_PARAMS,
+                  "options.k must be a non-negative number", 2)
+    end
+    local ef_search = opts and opts.ef_search
+    if ef_search == nil then
+        ef_search = -1
+    elseif type(ef_search) ~= 'number' or ef_search < 0 then
+        box.error(box.error.ILLEGAL_PARAMS,
+                  "options.ef_search must be a non-negative number", 2)
+    end
+    local raw = internal.search(index.space_id, index.id, {query}, k,
+                                ef_search)
+    local ret = {}
+    for i, pair in ipairs(raw) do
+        ret[i] = {tuple = box.tuple.new(pair[1]), distance = pair[2]}
+    end
+    return ret
+end
+
 base_index_mt.select_ffi = function(index, key, opts)
     if builtin.box_read_ffi_is_disabled then
         return base_index_mt.select_luac(index, key, opts)
@@ -2381,6 +2409,11 @@ for _, op in ipairs(read_ops) do
     vinyl_index_mt[op] = base_index_mt[op..'_luac']
     memtx_index_mt[op] = base_index_mt[op..'_ffi']
 end
+-- search() has a single implementation (no _ffi/_luac split): it always
+-- goes through box.internal.search(), and non-VECTOR indexes reject it
+-- with a clear error at the C level (see generic_index_search()).
+vinyl_index_mt.search = base_index_mt.search
+memtx_index_mt.search = base_index_mt.search
 -- Lua 5.2 compatibility
 vinyl_index_mt.__pairs = vinyl_index_mt.pairs
 vinyl_index_mt.__ipairs = vinyl_index_mt.pairs

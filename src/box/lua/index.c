@@ -39,6 +39,7 @@
 #include "small/region.h"
 #include "box/arrow_ipc.h"
 #include "fiber.h"
+#include "port.h"
 
 /** {{{ box.index Lua library: access to spaces and indexes
  */
@@ -289,6 +290,46 @@ lbox_index_count(lua_State *L)
 	return 1;
 }
 
+/**
+ * Find the nearest neighbors of a query vector in a VECTOR index.
+ * Returns a Lua array of raw [tuple_fields, distance] pairs (see
+ * box_index_search()); box.internal wraps each pair into a proper
+ * box.tuple, see base_index_mt.search() in schema.lua.
+ */
+static int
+lbox_index_search(lua_State *L)
+{
+	if (lua_gettop(L) != 5 || !lua_isnumber(L, 1) || !lua_isnumber(L, 2) ||
+	    !lua_isnumber(L, 4) || !lua_isnumber(L, 5)) {
+		diag_set(IllegalParams,
+			 "Usage: index.search(space_id, index_id, query, "
+			 "k, ef_search)");
+		return luaT_error(L);
+	}
+
+	uint32_t space_id = lua_tonumber(L, 1);
+	uint32_t index_id = lua_tonumber(L, 2);
+	uint32_t k = lua_tonumber(L, 4);
+	int64_t ef_search = lua_tonumber(L, 5);
+
+	size_t key_len;
+	size_t region_svp = region_used(&fiber()->gc);
+	const char *key = lbox_encode_tuple_on_gc(L, 3, &key_len);
+	if (key == NULL)
+		return luaT_error(L);
+
+	struct port port;
+	int rc = box_index_search(space_id, index_id, key, key + key_len,
+				  k, ef_search, &port);
+	region_truncate(&fiber()->gc, region_svp);
+	if (rc != 0)
+		return luaT_error(L);
+
+	port_dump_lua(&port, L, PORT_DUMP_LUA_MODE_TABLE);
+	port_destroy(&port);
+	return 1;
+}
+
 /* }}} */
 
 /* {{{ box.index.iterator Lua library: index iterators */
@@ -456,6 +497,7 @@ box_lua_index_init(struct lua_State *L)
 		{"min", lbox_index_min},
 		{"max", lbox_index_max},
 		{"count", lbox_index_count},
+		{"search", lbox_index_search},
 		{"iterator", lbox_index_iterator},
 		{"iterator_next", lbox_iterator_next},
 		{"truncate", lbox_truncate},

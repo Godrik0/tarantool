@@ -1191,6 +1191,20 @@ generic_index_get(struct index *index, const char *key,
 	return -1;
 }
 
+int
+generic_index_search(struct index *index, const char *query,
+		     uint32_t part_count,
+		     const struct vector_search_opts *opts,
+		     struct port *port)
+{
+	(void)query;
+	(void)part_count;
+	(void)opts;
+	(void)port;
+	diag_set(UnsupportedIndexFeature, index->def, "search()");
+	return -1;
+}
+
 struct iterator *
 generic_index_create_iterator(struct index *base, enum iterator_type type,
 			      const char *key, uint32_t part_count,

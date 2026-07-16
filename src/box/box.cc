@@ -3909,6 +3909,48 @@ box_select_ffi(uint32_t space_id, uint32_t index_id, const char *key,
 			  port);
 }
 
+int
+box_index_search(uint32_t space_id, uint32_t index_id, const char *query,
+		 const char *query_end, uint32_t k, int64_t ef_search,
+		 struct port *port)
+{
+	(void)query_end;
+	struct space *space = space_cache_find(space_id);
+	if (space == NULL)
+		return -1;
+	if (access_check_space(space, PRIV_R) != 0)
+		return -1;
+	struct index *index = index_find(space, index_id);
+	if (index == NULL)
+		return -1;
+
+	uint32_t part_count = query ? mp_decode_array(&query) : 0;
+
+	struct vector_search_opts opts;
+	opts.k = k;
+	opts.ef_search = ef_search;
+
+	ERROR_INJECT(ERRINJ_TESTING, {
+		diag_set(ClientError, ER_INJECTION, "ERRINJ_TESTING");
+		return -1;
+	});
+
+	struct txn *txn;
+	struct txn_ro_savepoint svp;
+	if (txn_begin_ro_stmt(space, &txn, &svp) != 0)
+		return -1;
+
+	port_c_create(port);
+	int rc = index_search(index, query, part_count, &opts, port);
+
+	txn_end_ro_stmt(txn, &svp);
+	if (rc != 0) {
+		port_destroy(port);
+		return -1;
+	}
+	return 0;
+}
+
 API_EXPORT int
 box_insert(uint32_t space_id, const char *tuple, const char *tuple_end,
 	   box_tuple_t **result)

@@ -54,9 +54,22 @@ struct key_def;
 struct info_handler;
 struct arrow_options;
 struct ArrowArrayStream;
+struct port;
 
 typedef struct tuple box_tuple_t;
 typedef struct key_def box_key_def_t;
+
+/**
+ * Per-query parameters for index_vtab::search(). All fields are optional
+ * overrides of the index's own options (see struct index_opts); a negative
+ * value means "use the index default".
+ */
+struct vector_search_opts {
+	/** Max number of neighbors to return. */
+	uint32_t k;
+	/** Overrides opts.ef_search (HNSW search beam width), if >= 0. */
+	int64_t ef_search;
+};
 
 /** Context passed to box_on_select trigger callback. */
 struct box_on_select_ctx {
@@ -676,6 +689,21 @@ struct index_vtab {
 	void (*compact)(struct index *);
 	/** Reset all incremental statistic counters. */
 	void (*reset_stat)(struct index *);
+	/**
+	 * Find the nearest neighbors of a query vector (approximate nearest
+	 * neighbor search). Only supported by VECTOR indexes.
+	 *
+	 * @query is a MsgPack array with @part_count elements, same format as
+	 * the key passed to create_iterator() with ITER_NEIGHBOR.
+	 *
+	 * For every found tuple visible in the current transaction, a
+	 * MsgPack array [tuple, distance] pair is added to @port (see
+	 * port_c_add_mp()), ordered by non-decreasing distance.
+	 */
+	int (*search)(struct index *index, const char *query,
+		     uint32_t part_count,
+		     const struct vector_search_opts *opts,
+		     struct port *port);
 };
 
 struct index {
@@ -1013,6 +1041,13 @@ index_get(struct index *index, const char *key,
 	return index->vtab->get(index, key, part_count, result);
 }
 
+static inline int
+index_search(struct index *index, const char *query, uint32_t part_count,
+	     const struct vector_search_opts *opts, struct port *port)
+{
+	return index->vtab->search(index, query, part_count, opts, port);
+}
+
 static inline struct iterator *
 index_create_iterator_with_offset(struct index *index, enum iterator_type type,
 				  const char *key, uint32_t part_count,
@@ -1228,6 +1263,11 @@ generic_index_read_view_count(struct index_read_view *rv,
 			      enum iterator_type type, const char *key,
 			      uint32_t part_count);
 int generic_index_get(struct index *, const char *, uint32_t, struct tuple **);
+int
+generic_index_search(struct index *index, const char *query,
+		     uint32_t part_count,
+		     const struct vector_search_opts *opts,
+		     struct port *port);
 struct index_read_view *
 generic_index_create_read_view(struct index *index);
 void generic_index_stat(struct index *, struct info_handler *);

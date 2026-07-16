@@ -265,6 +265,138 @@ g.test_search_update_delete_and_bsize = function(cg)
     end)
 end
 
+g.test_search = function(cg)
+    cg.server:exec(function()
+        local s = box.schema.space.create('test', {
+            format = {
+                {name = 'id', type = 'unsigned'},
+                {name = 'vec', type = 'array'},
+            },
+        })
+        s:create_index('pk')
+        local idx = s:create_index('vec', {
+            type = 'vector',
+            unique = false,
+            parts = {{field = 'vec', type = 'array'}},
+            dimension = 2,
+            distance = 'l2',
+            m = 8,
+            ef_construction = 32,
+            ef_search = 32,
+        })
+
+        s:insert({1, {0, 0}})
+        s:insert({2, {1, 0}})
+        s:insert({3, {3, 0}})
+        s:insert({4, {0, 2}})
+
+        local function ids(rows)
+            local result = {}
+            for i, row in ipairs(rows) do
+                result[i] = row.tuple[1]
+            end
+            return result
+        end
+
+        -- Results are ordered by non-decreasing distance and carry both
+        -- the tuple and the distance.
+        local res = idx:search({0, 0}, {k = 4})
+        t.assert_equals(ids(res), {1, 2, 4, 3})
+        t.assert_equals(res[1].distance, 0)
+        for i = 1, #res do
+            t.assert_type(res[i].distance, 'number')
+            t.assert(box.tuple.is(res[i].tuple))
+        end
+        for i = 2, #res do
+            t.assert(res[i].distance >= res[i - 1].distance)
+        end
+
+        -- k == 0.
+        t.assert_equals(idx:search({0, 0}, {k = 0}), {})
+
+        -- k > size: returns all the tuples there are, no error.
+        res = idx:search({0, 0}, {k = 100})
+        t.assert_equals(ids(res), {1, 2, 4, 3})
+
+        -- Per-query ef_search override is accepted and doesn't break
+        -- ordering (recall differences aren't reliably observable on
+        -- such a tiny dataset).
+        res = idx:search({0, 0}, {k = 4, ef_search = 1})
+        t.assert_equals(#res, 4)
+
+        t.assert_error_msg_contains('options.k must be', function()
+            idx:search({0, 0}, {})
+        end)
+        t.assert_error_msg_contains('options.k must be', function()
+            idx:search({0, 0}, {k = -1})
+        end)
+        t.assert_error_msg_contains('options.ef_search must be', function()
+            idx:search({0, 0}, {k = 1, ef_search = -1})
+        end)
+
+        t.assert_error_msg_contains('does not support', function()
+            s.index.pk:search({1}, {k = 1})
+        end)
+    end)
+end
+
+g.test_search_mvcc_over_fetch = function(cg)
+    t.skip_if(not cg.params.memtx_use_mvcc_engine,
+             'requires memtx_use_mvcc_engine')
+    cg.server:exec(function()
+        local fiber = require('fiber')
+        local s = box.schema.space.create('test', {
+            format = {
+                {name = 'id', type = 'unsigned'},
+                {name = 'vec', type = 'array'},
+            },
+        })
+        s:create_index('pk')
+        local idx = s:create_index('vec', {
+            type = 'vector',
+            unique = false,
+            parts = {{field = 'vec', type = 'array'}},
+            dimension = 2,
+            distance = 'l2',
+            m = 8,
+            ef_construction = 32,
+            ef_search = 32,
+        })
+
+        s:insert({1, {0, 0}})
+        s:insert({2, {10, 0}})
+        s:insert({3, {11, 0}})
+
+        local function ids(rows)
+            local result = {}
+            for i, row in ipairs(rows) do
+                result[i] = row.tuple[1]
+            end
+            return result
+        end
+
+        -- Insert two candidates much closer to the query than tuples 2
+        -- and 3, but keep the inserting transaction open, so they must
+        -- stay invisible to the concurrent search() below. Over-fetch
+        -- must still find k = 3 visible neighbors by reaching past them.
+        local cond = fiber.cond()
+        local writer = fiber.create(function()
+            fiber.self():set_joinable(true)
+            box.begin()
+            s:insert({4, {1, 0}})
+            s:insert({5, {2, 0}})
+            cond:wait()
+            box.rollback()
+        end)
+
+        local res = idx:search({0, 0}, {k = 3})
+        t.assert_equals(ids(res), {1, 2, 3})
+
+        cond:signal()
+        writer:join()
+    end)
+end
+
 g.test_recovery_rebuild = function(cg)
     cg.server:exec(function()
         local s = box.schema.space.create('test', {

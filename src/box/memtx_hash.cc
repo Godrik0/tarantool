@@ -742,6 +742,7 @@ static const struct index_vtab memtx_hash_index_vtab_base = {
 	/* .stat = */ generic_index_stat,
 	/* .compact = */ generic_index_compact,
 	/* .reset_stat = */ generic_index_reset_stat,
+	/* .search = */ generic_index_search,
 };
 
 static const struct memtx_index_vtab memtx_hash_index_vtab = {
